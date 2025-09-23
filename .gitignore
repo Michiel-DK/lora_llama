@@ -1,0 +1,8 @@
+.env
+.envrc
+.python-version
+datasets/
+adapters/
+.DS_Store
+notebooks/
+*__pycache__*
