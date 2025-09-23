@@ -50,7 +50,7 @@ class LloraTrainer():
         
         timing = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        new_adapter_path = os.path.join(ADAPTER_PATH, f'{MODEL_NAME}_{timing}_epoch{iters}.safetensors')
+        new_adapter_path = os.path.join(ADAPTER_PATH, f'{timing}_epoch{iters}.safetensors')
         
         train_sft(
             model=self.model,
