@@ -72,13 +72,15 @@ class LloraTrainer():
         )
         
 if __name__ == '__main__':
-    from pt_app.data.opus_dataset import OpusDS
+    from pt_app.data.opus_dataset import LanguageDS
     
     lora = LloraTrainer()
     
     m, t = lora.get_model()
     lora.get_optimizer()
     
-    train, val = OpusDS(tokenizer=t).create_datasets()
+    train, val = LanguageDS(tokenizer=t, dataset='opus_books').create_datasets()
+    
+    import ipdb;ipdb.set_trace()
     
     lora.train(train_set=train, val_set=val)
