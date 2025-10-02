@@ -3,12 +3,15 @@ from mlx_lm_lora.trainer.datasets import TextDataset
 
 from params import *
 
+import pandas as pd
 
-class OpusDS():
+
+class LanguageDS():
     
-    def __init__(self, tokenizer):
+    def __init__(self, tokenizer, dataset):
         
         self.tokenizer = tokenizer
+        self.dataset = dataset
         
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -82,12 +85,15 @@ class OpusDS():
         datasets = []
         
         # Load OPUS-100 dataset (Portuguese-English subset)
-        try:
+        if self.dataset == 'opus_books':
             opus_dataset = load_dataset("opus_books", "en-pt")
             datasets.append(opus_dataset["train"])
             print(f"Loaded OPUS-100 pt-en: {len(opus_dataset['train'])} samples")
-        except Exception as e:
-            print(f"Could not load OPUS-100: {e}")
+        elif self.dataset == 'kaggle':
+            file = os.path.join(os.path.dirname(os.path.dirname(__file__)),'datasets', 'por.txt')
+            df = pd.read_csv(file, sep="\t", names=["En", "Pt", "NAN"])[["En", "Pt"]]
+            
+
             
         return datasets
     
