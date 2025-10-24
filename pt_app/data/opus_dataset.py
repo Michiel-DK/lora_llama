@@ -3,12 +3,15 @@ from mlx_lm_lora.trainer.datasets import TextDataset
 
 from params import *
 
+import pandas as pd
 
-class OpusDS():
+
+class LanguageDS():
     
-    def __init__(self, tokenizer):
+    def __init__(self, tokenizer, dataset):
         
         self.tokenizer = tokenizer
+        self.dataset = dataset
         
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -82,12 +85,15 @@ class OpusDS():
         datasets = []
         
         # Load OPUS-100 dataset (Portuguese-English subset)
-        try:
+        if self.dataset == 'opus_books':
             opus_dataset = load_dataset("opus_books", "en-pt")
             datasets.append(opus_dataset["train"])
             print(f"Loaded OPUS-100 pt-en: {len(opus_dataset['train'])} samples")
-        except Exception as e:
-            print(f"Could not load OPUS-100: {e}")
+        elif self.dataset == 'kaggle':
+            file = os.path.join(os.path.dirname(os.path.dirname(__file__)),'datasets', 'por.txt')
+            df = pd.read_csv(file, sep="\t", names=["En", "Pt", "NAN"])[["En", "Pt"]]
+            
+
             
         return datasets
     
@@ -107,12 +113,27 @@ class OpusDS():
             desc="Formatting translations"
             )
         
-            # Filter out samples that are too long
-        def filter_length(sample):
-            return len(self.tokenizer.encode(sample["text"])) <= MAX_SEQ_LENGTH
+        #     # Filter out samples that are too long
+        # def filter_length(sample):
+        #     return len(self.tokenizer.encode(sample["text"])) <= MAX_SEQ_LENGTH
 
-        formatted_dataset = formatted_dataset.filter(filter_length)
-        print(f"Samples after length filtering: {len(formatted_dataset)}")
+        # formatted_dataset = formatted_dataset.filter(filter_length)
+        # print(f"Samples after length filtering: {len(formatted_dataset)}")
+        
+        # Truncate samples that are too long instead of filtering
+        def truncate_text(sample):
+            tokens = self.tokenizer.encode(sample["text"])
+            if len(tokens) > MAX_SEQ_LENGTH:
+                # Truncate to MAX_SEQ_LENGTH tokens
+                truncated_tokens = tokens[:MAX_SEQ_LENGTH]
+                # Decode back to text
+                sample["text"] = self.tokenizer.decode(truncated_tokens, skip_special_tokens=True)
+            return sample
+        
+        formatted_dataset = formatted_dataset.map(
+            truncate_text,
+            desc="Truncating long texts"
+        )
 
         # Split into train and validation
         train_dataset, valid_dataset = formatted_dataset.train_test_split(
