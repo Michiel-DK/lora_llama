@@ -113,12 +113,27 @@ class LanguageDS():
             desc="Formatting translations"
             )
         
-            # Filter out samples that are too long
-        def filter_length(sample):
-            return len(self.tokenizer.encode(sample["text"])) <= MAX_SEQ_LENGTH
+        #     # Filter out samples that are too long
+        # def filter_length(sample):
+        #     return len(self.tokenizer.encode(sample["text"])) <= MAX_SEQ_LENGTH
 
-        formatted_dataset = formatted_dataset.filter(filter_length)
-        print(f"Samples after length filtering: {len(formatted_dataset)}")
+        # formatted_dataset = formatted_dataset.filter(filter_length)
+        # print(f"Samples after length filtering: {len(formatted_dataset)}")
+        
+        # Truncate samples that are too long instead of filtering
+        def truncate_text(sample):
+            tokens = self.tokenizer.encode(sample["text"])
+            if len(tokens) > MAX_SEQ_LENGTH:
+                # Truncate to MAX_SEQ_LENGTH tokens
+                truncated_tokens = tokens[:MAX_SEQ_LENGTH]
+                # Decode back to text
+                sample["text"] = self.tokenizer.decode(truncated_tokens, skip_special_tokens=True)
+            return sample
+        
+        formatted_dataset = formatted_dataset.map(
+            truncate_text,
+            desc="Truncating long texts"
+        )
 
         # Split into train and validation
         train_dataset, valid_dataset = formatted_dataset.train_test_split(
