@@ -150,7 +150,7 @@ class MTTrainingCallback(TrainingCallback):
         print(f"\n[MT METRICS] Computing translation metrics at step {step}...")
         
         # 1. Reduce the number of evaluation samples
-        num_eval = min(3, len(val_dataset))  # Only use 3 samples for faster evaluation
+        num_eval = min(10, len(val_dataset))  # Only use 3 samples for faster evaluation
         
         sources = []
         references = []
@@ -222,7 +222,7 @@ class MTTrainingCallback(TrainingCallback):
                     model=self.model,
                     tokenizer=self.tokenizer,
                     prompt=prompt,
-                    max_tokens=50  # Reduced for speed
+                    max_tokens=75  # Reduced for speed
                 )
                 
                 # Extract translation
@@ -241,7 +241,8 @@ class MTTrainingCallback(TrainingCallback):
         if predictions and len(predictions) == len(references):
             try:
                 # Calculate metrics
-                metrics = self.evaluator.compute_metrics(predictions, references)
+                #metrics = self.evaluator.compute_metrics(predictions, references)
+                metrics = self.evaluator.compute_metrics(predictions, references, metrics=['bleu', 'chrf'])  # Only compute essential metrics
                 print(self.evaluator.format_metrics(metrics))
                 
                 # Store in history

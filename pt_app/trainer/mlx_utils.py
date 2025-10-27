@@ -121,7 +121,7 @@ def mlx_generate_optimized(
     model,
     tokenizer,
     prompt,
-    max_tokens=50  # Reduced from 100
+    max_tokens=75  # Reduced from 100
 ):
     """Streamlined generation for MLX models"""
     # Tokenize prompt
