@@ -6,3 +6,4 @@ adapters/
 .DS_Store
 notebooks/
 *__pycache__*
+logs/*
