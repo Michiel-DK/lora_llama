@@ -16,56 +16,56 @@ class LanguageDS():
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-    # System prompt for Portuguese-English translation
-        self.system_prompt = """You are a helpful assistant that translates Portuguese text to English. Provide accurate and natural translations."""
+    # System prompt for English-Portuguese translation
+        self.system_prompt = """You are a helpful assistant that translates English text to Portuguese. Provide accurate and natural translations."""
 
     def format_translation_prompt(self, sample):
         """
-        Formats Portuguese-English translation pairs for instruction tuning.
+        Formats English-Portuguese translation pairs for instruction tuning.
         
         Expected input format:
         sample = {
-            "portuguese": "Olá, como você está?",
-            "english": "Hello, how are you?"
+            "english": "Hello, how are you?",
+            "portuguese": "Olá, como você está?"
         }
         
         Or for exercise format:
         sample = {
-            "source": "Olá, como você está?",
-            "target": "Hello, how are you?",
-            "source_lang": "pt",
-            "target_lang": "en"
+            "source": "Hello, how are you?",
+            "target": "Olá, como você está?",
+            "source_lang": "en",
+            "target_lang": "pt"
         }
         """
-        
+    
         # Handle different input formats
-        if "portuguese" in sample and "english" in sample:
-            portuguese_text = sample["portuguese"]
+        if "english" in sample and "portuguese" in sample:
             english_text = sample["english"]
+            portuguese_text = sample["portuguese"]
         elif "source" in sample and "target" in sample:
-            if sample.get("source_lang") == "pt" and sample.get("target_lang") == "en":
-                portuguese_text = sample["source"]
-                english_text = sample["target"]
-            elif sample.get("source_lang") == "en" and sample.get("target_lang") == "pt":
-                # Reverse for Portuguese to English
-                portuguese_text = sample["target"]
+            if sample.get("source_lang") == "en" and sample.get("target_lang") == "pt":
                 english_text = sample["source"]
-            else:
-                portuguese_text = sample["source"]
+                portuguese_text = sample["target"]
+            elif sample.get("source_lang") == "pt" and sample.get("target_lang") == "en":
+                # Reverse for English to Portuguese
                 english_text = sample["target"]
+                portuguese_text = sample["source"]
+            else:
+                english_text = sample["source"]
+                portuguese_text = sample["target"]
         else:
             # Handle generic translation format
-            portuguese_text = sample.get("text", sample.get("sentence", ""))
-            english_text = sample.get("translation", sample.get("target", ""))
+            english_text = sample.get("text", sample.get("sentence", ""))
+            portuguese_text = sample.get("translation", sample.get("target", ""))
         
-        # Create instruction-following format
-        instruction = "Translate the following Portuguese text to English:"
+        # Keep just the instruction without redundant prompt
+        #instruction = "Translate the following English text to Portuguese:"
         
-        # Format as conversation
+        # Format as conversation with proper assistant response
         conversation = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": f"{instruction}\n\n{portuguese_text}"},
-            {"role": "assistant", "content": english_text}
+            {"role": "user", "content": f"{english_text}"},
+            {"role": "assistant", "content": portuguese_text}  # Just the Portuguese text
         ]
         
         # Apply chat template
@@ -84,17 +84,18 @@ class LanguageDS():
         
         datasets = []
         
-        # Load OPUS-100 dataset (Portuguese-English subset)
+        # Load OPUS-100 dataset (English-Portuguese subset)
         if self.dataset == 'opus_books':
             opus_dataset = load_dataset("opus_books", "en-pt")
             datasets.append(opus_dataset["train"])
-            print(f"Loaded OPUS-100 pt-en: {len(opus_dataset['train'])} samples")
+            print(f"Loaded OPUS-100 en-pt: {len(opus_dataset['train'])} samples")
         elif self.dataset == 'kaggle':
             file = os.path.join(os.path.dirname(os.path.dirname(__file__)),'datasets', 'por.txt')
             df = pd.read_csv(file, sep="\t", names=["En", "Pt", "NAN"])[["En", "Pt"]]
-            
+            # Make sure the format matches what format_translation_prompt expects
+            df = df.rename(columns={"En": "english", "Pt": "portuguese"})
+            datasets.append(df)
 
-            
         return datasets
     
     def create_datasets(self, save=False):
