@@ -12,7 +12,7 @@ from datetime import datetime
 import mlx.core as mx
 
 from mlx_lm.tuner.callbacks import TrainingCallback
-from pt_app.trainer.mlx_utils import mlx_generate, mlx_generate_simple
+from pt_app.trainer.mlx_utils import *
 
 
 @dataclass
@@ -139,124 +139,115 @@ class MTTrainingCallback(TrainingCallback):
         print(f"[DEBUG] on_eval_begin called with kwargs: {list(kwargs.keys())}")
     
     def on_eval_end(self, **kwargs):
-        """Compute MT metrics after validation"""
-        
-        # Get validation dataset from kwargs
+        """Compute MT metrics after validation - optimized"""
         val_dataset = kwargs.get('val_dataset', None)
         val_loss = kwargs.get('val_loss', 0.0)
         step = kwargs.get('step', 0)
         
         if val_dataset is None:
-            print("[DEBUG] val_dataset is None, returning early")
             return
         
         print(f"\n[MT METRICS] Computing translation metrics at step {step}...")
-        print(f"[DEBUG] val_dataset length: {len(val_dataset)}")
+        
+        # 1. Reduce the number of evaluation samples
+        num_eval = min(3, len(val_dataset))  # Only use 3 samples for faster evaluation
         
         sources = []
         references = []
         predictions = []
         
-        # Sample subset for evaluation
-        num_eval = min(self.eval_samples, len(val_dataset))
-        
+        # 2. Extract text from validation samples
+        print(f"[INFO] Extracting text from {num_eval} samples...")
         for i in range(num_eval):
             try:
-                # Decode the tokenized sample
+                # Decode tokenized sample
                 token_ids = val_dataset[i]
                 full_text = self.tokenizer.decode(token_ids)
                 
-                # Extract English and Portuguese from the full text
+                # Your existing extraction code
                 en_pattern = "'en': "
                 en_idx = full_text.find(en_pattern)
                 if en_idx == -1:
                     en_pattern = '"en": '
                     en_idx = full_text.find(en_pattern)
-                    
+                
                 pt_pattern = "'pt': "
                 pt_idx = full_text.find(pt_pattern)
                 if pt_idx == -1:
                     pt_pattern = '"pt": '
                     pt_idx = full_text.find(pt_pattern)
                 
-                if en_idx != -1 and pt_idx != -1:
-                    # Extract source (English) text
-                    quote_start = full_text.find('"', en_idx + len(en_pattern))
-                    if quote_start == -1:
-                        quote_start = full_text.find("'", en_idx + len(en_pattern))
-                        
-                    quote_end = full_text.find('"', quote_start + 1)
-                    if quote_end == -1:
-                        quote_end = full_text.find("'", quote_start + 1)
-                    
-                    source_text = full_text[quote_start+1:quote_end]
-                    
-                    # Extract target (Portuguese) text
-                    quote_start = full_text.find("'", pt_idx + len(pt_pattern))
-                    if quote_start == -1:
-                        quote_start = full_text.find('"', pt_idx + len(pt_pattern))
-                        
+                if en_idx == -1 or pt_idx == -1:
+                    continue
+                
+                # Extract source (English)
+                quote_start = full_text.find('"', en_idx + len(en_pattern))
+                if quote_start == -1:
+                    quote_start = full_text.find("'", en_idx + len(en_pattern))
+                quote_end = full_text.find('"', quote_start + 1)
+                if quote_end == -1:
                     quote_end = full_text.find("'", quote_start + 1)
-                    if quote_end == -1:
-                        quote_end = full_text.find('"', quote_start + 1)
-                    
-                    target_text = full_text[quote_start+1:quote_end]
-                    
-                    print(f"[DEBUG] Extracted from sample {i}:")
-                    print(f"  Source: {source_text[:50]}...")
-                    print(f"  Target: {target_text[:50]}...")
-                    
-                    # Create prompt
-                    prompt = self.prompt_template.format(source=source_text)
-                    
-                    try:
-                        # Generate using the function defined above
-                        # full_output = mlx_generate(
-                        #     model=self.model,
-                        #     tokenizer=self.tokenizer,
-                        #     prompt=prompt,
-                        #     max_tokens=150,
-                        #     temp=0.1,
-                        #     top_p=0.9,
-                        #     repeat_penalty=1.1
-                        # )
-                        full_output = mlx_generate_simple(
-                                    model=self.model,
-                                    tokenizer=self.tokenizer,
-                                    prompt=prompt,
-                                    max_tokens=150
-                                )
-                        translation = full_output.replace(prompt, "").strip()
-                        
-                        sources.append(source_text)
-                        references.append(target_text)
-                        predictions.append(translation)
-                        
-                        print(f"Sample {i}:")
-                        print(f"  Source: {source_text[:50]}...")
-                        print(f"  Target: {target_text[:50]}...")
-                        print(f"  Predicted: {translation[:50]}...")
-                        
-                    except Exception as e:
-                        print(f"[WARNING] Error generating translation: {e}")
-                        import traceback
-                        traceback.print_exc()
-            
+                source_text = full_text[quote_start+1:quote_end]
+                
+                # Extract target (Portuguese)
+                quote_start = full_text.find("'", pt_idx + len(pt_pattern))
+                if quote_start == -1:
+                    quote_start = full_text.find('"', pt_idx + len(pt_pattern))
+                quote_end = full_text.find("'", quote_start + 1)
+                if quote_end == -1:
+                    quote_end = full_text.find('"', quote_start + 1)
+                target_text = full_text[quote_start+1:quote_end]
+                
+                # Store extracted texts
+                sources.append(source_text)
+                references.append(target_text)
+                
+                print(f"[INFO] Sample {i+1}:")
+                print(f"  Source: {source_text[:50]}...")
+                print(f"  Target: {target_text[:50]}...")
+                
             except Exception as e:
-                    print(f"[WARNING] Error processing sample: {e}")
-                    import traceback
-                    traceback.print_exc()
+                print(f"[WARNING] Error extracting text from sample {i}: {e}")
         
-        # Compute metrics if we have predictions
-        if predictions:
+        # 3. Generate translations
+        print(f"[INFO] Generating {len(sources)} translations...")
+        for i, source_text in enumerate(sources):
             try:
+                # Create prompt
+                prompt = self.prompt_template.format(source=source_text)
+                
+                # Use optimized generation
+                print(f"[INFO] Generating translation {i+1}/{len(sources)}...")
+                full_output = mlx_generate_optimized(
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                    prompt=prompt,
+                    max_tokens=50  # Reduced for speed
+                )
+                
+                # Extract translation
+                translation = full_output.replace(prompt, "").strip()
+                predictions.append(translation)
+                
+                print(f"  Translation: {translation[:50]}...")
+                
+            except Exception as e:
+                print(f"[WARNING] Error generating translation {i+1}: {e}")
+                import traceback
+                traceback.print_exc()
+                predictions.append("")  # Add empty string as placeholder
+        
+        # 4. Compute metrics
+        if predictions and len(predictions) == len(references):
+            try:
+                # Calculate metrics
                 metrics = self.evaluator.compute_metrics(predictions, references)
                 print(self.evaluator.format_metrics(metrics))
                 
-                # Save metrics history
+                # Store in history
                 self.metrics_history.append({
                     'step': step,
-                    'val_loss': float(val_loss) if val_loss else 0.0,
+                    'val_loss': float(val_loss),
                     'num_samples': len(predictions),
                     'metrics': {
                         'bleu': metrics.bleu,
@@ -267,7 +258,7 @@ class MTTrainingCallback(TrainingCallback):
                     }
                 })
                 
-                # Save metrics to file
+                # Save to file
                 metrics_file = os.path.join(self.log_dir, "mt_metrics_history.json")
                 with open(metrics_file, 'w') as f:
                     json.dump(self.metrics_history, f, indent=2)
@@ -275,7 +266,7 @@ class MTTrainingCallback(TrainingCallback):
                 # Save sample translations
                 samples_file = os.path.join(self.log_dir, f"translations_step_{step}.json")
                 samples_to_save = []
-                for i in range(min(10, len(predictions))):
+                for i in range(min(len(predictions), len(sources), len(references))):
                     samples_to_save.append({
                         'source_en': sources[i],
                         'reference_pt': references[i],
@@ -284,8 +275,12 @@ class MTTrainingCallback(TrainingCallback):
                 
                 with open(samples_file, 'w') as f:
                     json.dump(samples_to_save, f, indent=2, ensure_ascii=False)
-                    
+                
+                print(f"[INFO] Saved metrics at step {step}")
+                
             except Exception as e:
                 print(f"[WARNING] Error computing metrics: {e}")
+                import traceback
+                traceback.print_exc()
         else:
-            print("[WARNING] No predictions generated, skipping metrics calculation")
+            print("[WARNING] No predictions generated or mismatched lengths, skipping metrics calculation")

@@ -109,7 +109,5 @@ if __name__ == '__main__':
     lora.get_optimizer()
     
     train, val = LanguageDS(tokenizer=t, dataset='opus_books').create_datasets(save=True)
-    
-    import ipdb;ipdb.set_trace()
-    
+        
     adapter_path = lora.train(train_set=train, val_set=val, use_mt_metrics=True)

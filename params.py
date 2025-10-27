@@ -67,7 +67,7 @@ TRAINING_ARGS = {
     "max_seq_length": MAX_SEQ_LENGTH,
     "grad_checkpoint": True,        # Gradient checkpointing for memory efficiency
     "steps_per_report": 20,         # Log metrics every N steps
-    "steps_per_eval": 10,           # Evaluate every N steps
+    "steps_per_eval": 20,           # Evaluate every N steps
     "steps_per_save": 50,           # Save checkpoint every N steps
     "val_batches": 1,               # Number of validation batches to run
     "warmup_steps": 100,            # Learning rate warmup steps
