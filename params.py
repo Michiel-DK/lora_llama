@@ -9,10 +9,10 @@ USER_NAME = "mlx-community"
 ADAPTER_PATH = "./adapters/"
 MAX_SEQ_LENGTH = 512
 
-DATASET_SAMPLES = 50
+DATASET_SAMPLES = None
 
 BATCH_SIZE = 4
-EPOCHS = 3
+EPOCHS = 2
 
 LORA_CONFIG = {
     "rank": 8,    #rank dimension for LoRA update matrices
@@ -66,9 +66,9 @@ TRAINING_ARGS = {
     "batch_size": BATCH_SIZE,
     "max_seq_length": MAX_SEQ_LENGTH,
     "grad_checkpoint": True,        # Gradient checkpointing for memory efficiency
-    "steps_per_report": 20,         # Log metrics every N steps
-    "steps_per_eval": 10,           # Evaluate every N steps
-    "steps_per_save": 50,           # Save checkpoint every N steps
+    "steps_per_report": 50,         # Log metrics every N steps
+    "steps_per_eval": 300,           # Evaluate every N steps
+    "steps_per_save": 300,           # Save checkpoint every N steps
     "val_batches": 1,               # Number of validation batches to run
     "warmup_steps": 100,            # Learning rate warmup steps
     "grad_clip": 1.0,               # Gradient clipping threshold

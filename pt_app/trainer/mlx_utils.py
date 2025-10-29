@@ -116,3 +116,53 @@ def mlx_generate_simple(
     
     # Decode to text
     return tokenizer.decode(all_tokens)
+
+def mlx_generate_optimized(
+    model,
+    tokenizer,
+    prompt,
+    max_tokens=75  # Reduced from 100
+):
+    """Streamlined generation for MLX models"""
+    # Tokenize prompt
+    tokens = tokenizer.encode(prompt)
+    
+    # Ensure model in eval mode
+    model.eval()
+    
+    # Initialize
+    generated_tokens = []
+    
+    # Simple autoregressive generation
+    for _ in range(max_tokens):
+        # Create input array with all tokens so far
+        input_tokens = mx.array([tokens + generated_tokens])
+        
+        # Forward pass - get logits
+        outputs = model(input_tokens)
+        
+        # Extract logits for next token prediction
+        if isinstance(outputs, dict) and 'logits' in outputs:
+            logits = outputs['logits']
+        else:
+            logits = outputs
+            
+        # Get the logits for the final position
+        if len(logits.shape) > 2:
+            next_token_logits = logits[0, -1, :]  # batch, sequence, vocab
+        else:
+            next_token_logits = logits[-1]  # just sequence, vocab
+        
+        # Simple greedy decoding
+        next_token = int(mx.argmax(next_token_logits).item())
+        
+        # Add to generated tokens
+        generated_tokens.append(next_token)
+        
+        # Stop if we hit EOS token or max length
+        if next_token == tokenizer.eos_token_id:
+            break
+    
+    # Combine and decode
+    all_tokens = tokens + generated_tokens
+    return tokenizer.decode(all_tokens)
