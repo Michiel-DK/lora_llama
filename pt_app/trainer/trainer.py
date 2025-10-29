@@ -12,9 +12,9 @@ import math
 from datetime import datetime
 
 class LloraTrainer():
-    
+
     def __init__(self):
-        
+
         self.model_name = MODEL_NAME
         self.lora_config = LORA_CONFIG
         self.quantization_config = QUANTIZATION_CONFIG
@@ -24,7 +24,9 @@ class LloraTrainer():
         self.optimizer_config = OPTIMIZER_CONFIG
         self.training_args = TRAINING_ARGS
         self.adapter_path = ADAPTER_PATH
-        
+
+        # self.load_adapter = load_adapter
+        # self.adapter_to_load = adapter_to_load
         
         self.model = None
         self.tokenizer = None
@@ -40,6 +42,11 @@ class LloraTrainer():
                     "group_size": 64
                 },
             )
+        
+        # if self.load_adapter and self.adapter_to_load:
+        #     print(f"[INFO] Loading pretrained adapter from: {self.adapter_to_load}")
+        #     self.model.load_adapter(self.adapter_to_load)
+        
         print_trainable_parameters(self.model)
         
         return self.model, self.tokenizer

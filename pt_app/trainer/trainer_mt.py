@@ -13,6 +13,7 @@ class LloraTrainerWithMT(LloraTrainer):
     """Extended trainer with MT metrics"""
     
     def __init__(self):
+        # Pass the new parameters to the parent class
         super().__init__()
         # Initialize MT evaluator
         self.mt_evaluator = MTEvaluator(
@@ -39,6 +40,8 @@ class LloraTrainerWithMT(LloraTrainer):
                 mt_evaluator=self.mt_evaluator,
                 log_dir=os.path.join("./logs", f"mt_{timing}"),
                 eval_samples=50,  # Adjust based on your needs
+                train_dataset_size=len(train_set),  # Pass the size of your training set
+                batch_size=self.batch_size,         # Pass your batch size 
                 prompt_template="Translate to Portuguese: {source}\n\nPortuguese:"
             )
             print("[INFO] Training with MT metrics enabled")
@@ -83,7 +86,7 @@ class LloraTrainerWithMT(LloraTrainer):
         )
         
         # Print final MT metrics if available
-        import ipdb;ipdb.set_trace()
+       #import ipdb;ipdb.set_trace()
         if use_mt_metrics and isinstance(callback, MTTrainingCallback):
                 print("[DEBUG] Manually forcing metrics computation")
                 # Manually invoke the metrics computation
@@ -103,7 +106,8 @@ class LloraTrainerWithMT(LloraTrainer):
 if __name__ == '__main__':
     from pt_app.data.opus_dataset import LanguageDS
     
-    lora = LloraTrainerWithMT()
+    lora = LloraTrainerWithMT(
+    )
     
     m, t = lora.get_model()
     lora.get_optimizer()

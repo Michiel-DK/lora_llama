@@ -116,16 +116,26 @@ class MTTrainingCallback(TrainingCallback):
                  tokenizer,
                  mt_evaluator: MTEvaluator,
                  log_dir: str = "./logs",
-                 eval_samples: int = 50,
+                eval_samples=8,
+                train_dataset_size=None,  # Add this parameter  
+                batch_size=None,         # Add this parameter
                  prompt_template: str = "Translate to Portuguese: {source}\n\nPortuguese:"):
+        
         super().__init__()
         self.model = model
         self.tokenizer = tokenizer
         self.evaluator = mt_evaluator
         self.log_dir = log_dir
         self.eval_samples = eval_samples
+        self.train_dataset_size = train_dataset_size
+        self.batch_size = batch_size
         self.prompt_template = prompt_template
         self.metrics_history = []
+        
+        if train_dataset_size and batch_size:
+            self.steps_per_epoch = max(1, train_dataset_size // batch_size)
+            print(f"[INFO] MT Callback: {train_dataset_size} samples, {batch_size} batch size")
+            print(f"[INFO] Estimated steps per epoch: {self.steps_per_epoch}")
         
         os.makedirs(log_dir, exist_ok=True)
         
@@ -143,15 +153,45 @@ class MTTrainingCallback(TrainingCallback):
         val_dataset = kwargs.get('val_dataset', None)
         val_loss = kwargs.get('val_loss', 0.0)
         step = kwargs.get('step', 0)
+        total_steps = kwargs.get('iters', 0)
         
         if val_dataset is None:
             return
         
+        # Calculate steps per epoch dynamically
+        if hasattr(self, 'train_dataset_size') and hasattr(self, 'batch_size'):
+            steps_per_epoch = self.train_dataset_size // self.batch_size
+        else:
+            # Estimate based on common values
+            steps_per_epoch = 300
+        
+        # Determine if this is a milestone step worth doing full evaluation
+        is_first_or_last = (step <= 5 or step >= total_steps - 5)
+        is_epoch_boundary = (step % steps_per_epoch < 5)  # Within 5 steps of epoch boundary
+        
+        # Compute metrics less frequently for regular steps
+        metrics_interval = max(steps_per_epoch // 2, 50)  # Half epoch or at least every 50 steps
+        compute_metrics = (is_first_or_last or is_epoch_boundary or step % metrics_interval == 0)
+        
+        # For non-metric steps, just record validation loss
+        if not compute_metrics:
+            self.metrics_history.append({
+                'step': step,
+                'val_loss': float(val_loss),
+                'metrics_computed': False
+            })
+            print(f"\n[INFO] Skipping full metrics at step {step}, recording validation loss only")
+            return
+        
         print(f"\n[MT METRICS] Computing translation metrics at step {step}...")
         
-        # 1. Reduce the number of evaluation samples
-        num_eval = min(10, len(val_dataset))  # Only use 3 samples for faster evaluation
-        
+        # Choose number of evaluation samples
+        if is_first_or_last or is_epoch_boundary:
+            num_eval = min(15, len(val_dataset))  # More samples at important points
+        else:
+            num_eval = min(8, len(val_dataset))   # Fewer samples for regular checks
+            
+            
         sources = []
         references = []
         predictions = []
@@ -241,8 +281,8 @@ class MTTrainingCallback(TrainingCallback):
         if predictions and len(predictions) == len(references):
             try:
                 # Calculate metrics
-                #metrics = self.evaluator.compute_metrics(predictions, references)
-                metrics = self.evaluator.compute_metrics(predictions, references, metrics=['bleu', 'chrf'])  # Only compute essential metrics
+                metrics = self.evaluator.compute_metrics(predictions, references)
+                #metrics = self.evaluator.compute_metrics(predictions, references, metrics=['bleu', 'chrf'])  # Only compute essential metrics
                 print(self.evaluator.format_metrics(metrics))
                 
                 # Store in history
