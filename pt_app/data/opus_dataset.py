@@ -1,9 +1,12 @@
-from datasets import load_dataset, concatenate_datasets
+from datasets import load_dataset, concatenate_datasets, Dataset
+import os
 from mlx_lm_lora.trainer.datasets import TextDataset
 
 from params import *
 
 import pandas as pd
+
+import random
 
 
 class LanguageDS():
@@ -76,12 +79,11 @@ class LanguageDS():
         )
         
         return sample
-
+    
     def create_translation_exercises_dataset(self):
         """
         Create a dataset from various Portuguese-English translation sources
         """
-        
         datasets = []
         
         # Load OPUS-100 dataset (English-Portuguese subset)
@@ -89,15 +91,36 @@ class LanguageDS():
             opus_dataset = load_dataset("opus_books", "en-pt")
             datasets.append(opus_dataset["train"])
             print(f"Loaded OPUS-100 en-pt: {len(opus_dataset['train'])} samples")
+            
         elif self.dataset == 'kaggle':
-            file = os.path.join(os.path.dirname(os.path.dirname(__file__)),'datasets', 'por.txt')
-            df = pd.read_csv(file, sep="\t", names=["En", "Pt", "NAN"])[["En", "Pt"]]
-            # Make sure the format matches what format_translation_prompt expects
-            df = df.rename(columns={"En": "english", "Pt": "portuguese"})
-            datasets.append(df)
+            file_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'datasets', 'por.txt')
+            df = pd.read_csv(file_path, sep="\t", names=["En", "Pt", "NAN"])[["En", "Pt"]]
+            # Convert to OPUS structure so existing extraction code works
+            opus_format_data = []
+            for _, row in df.iterrows():
+                opus_format_data.append({
+                    "translation": {
+                        "en": row["En"],
+                        "pt": row["Pt"]
+                    }
+                })
+            
+            # Convert to HuggingFace Dataset
+            kaggle_dataset = Dataset.from_list(opus_format_data)
+            datasets.append(kaggle_dataset)
+            print(f"Loaded Kaggle Portuguese dataset: {len(kaggle_dataset)} samples")
 
         return datasets
     
+    def print_formatted_samples(self, dataset, num_samples=3):
+        """Print sample items from formatted dataset"""
+        print("\n===== FORMATTED DATASET SAMPLES =====")
+        indices = random.sample(range(len(dataset)), min(num_samples, len(dataset)))
+        for i, idx in enumerate(indices):
+            print(f"Sample {i+1}:")
+            print(dataset[idx]['text'])
+            print('-' * 50)
+
     def create_datasets(self, save=False):
         
         datasets = self.create_translation_exercises_dataset()
@@ -114,12 +137,7 @@ class LanguageDS():
             desc="Formatting translations"
             )
         
-        #     # Filter out samples that are too long
-        # def filter_length(sample):
-        #     return len(self.tokenizer.encode(sample["text"])) <= MAX_SEQ_LENGTH
-
-        # formatted_dataset = formatted_dataset.filter(filter_length)
-        # print(f"Samples after length filtering: {len(formatted_dataset)}")
+        self.print_formatted_samples(formatted_dataset)
         
         # Truncate samples that are too long instead of filtering
         def truncate_text(sample):
@@ -143,11 +161,27 @@ class LanguageDS():
         ).values()
         
         if save:
-            train_dataset.save_to_disk("./datasets/opus/pt_en_train_dataset")
-            valid_dataset.save_to_disk("./datasets/opus/pt_en_valid_dataset")
-            
-        
+            train_dataset.save_to_disk(f"./datasets/{self.dataset}/pt_en_train_dataset")
+            valid_dataset.save_to_disk(f"./datasets/{self.dataset}/pt_en_valid_dataset")
+
+
         train_set = TextDataset(train_dataset, self.tokenizer, text_key='text')
         valid_set = TextDataset(valid_dataset, self.tokenizer, text_key='text')
         
         return train_set, valid_set
+        
+if __name__ == '__main__':
+    
+    from pt_app.trainer.trainer import LloraTrainer
+    
+    lora = LloraTrainer()
+    
+    m, t = lora.get_model()
+    
+    ds_opus = LanguageDS(t, dataset='opus_books')
+    train_opus, valid_opus = ds_opus.create_datasets(save=True)
+
+    ds_kaggle = LanguageDS(t, dataset='kaggle')
+    train_kaggle, valid_kaggle = ds_kaggle.create_datasets(save=True)
+
+    import ipdb;ipdb.set_trace()

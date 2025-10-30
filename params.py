@@ -3,13 +3,13 @@ import os
 HF_TOKEN = os.getenv('HUGGINFACE_HUB_TOKEN') 
 
 MODEL_NAME = "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit"
-NEW_MODEL_NAME = "new-model"
+NEW_MODEL_NAME = "kaggle_llama_4bit"
 USER_NAME = "mlx-community"
 
-ADAPTER_PATH = "./adapters/"
-MAX_SEQ_LENGTH = 512
+ADAPTER_PATH = "./adapters/adapters_kaggle/" #"./adapters_opus/"
+MAX_SEQ_LENGTH = 50 #512
 
-DATASET_SAMPLES = None
+DATASET_SAMPLES = 200
 
 BATCH_SIZE = 4
 EPOCHS = 2
@@ -66,9 +66,9 @@ TRAINING_ARGS = {
     "batch_size": BATCH_SIZE,
     "max_seq_length": MAX_SEQ_LENGTH,
     "grad_checkpoint": True,        # Gradient checkpointing for memory efficiency
-    "steps_per_report": 50,         # Log metrics every N steps
-    "steps_per_eval": 300,           # Evaluate every N steps
-    "steps_per_save": 300,           # Save checkpoint every N steps
+    "steps_per_report": 30,         # Log metrics every N steps
+    "steps_per_eval": 20,           # Evaluate every N steps
+    "steps_per_save": 20,           # Save checkpoint every N steps
     "val_batches": 1,               # Number of validation batches to run
     "warmup_steps": 100,            # Learning rate warmup steps
     "grad_clip": 1.0,               # Gradient clipping threshold

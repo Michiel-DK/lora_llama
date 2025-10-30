@@ -325,3 +325,4 @@ class MTTrainingCallback(TrainingCallback):
                 traceback.print_exc()
         else:
             print("[WARNING] No predictions generated or mismatched lengths, skipping metrics calculation")
+            import ipdb;ipdb.set_trace()
