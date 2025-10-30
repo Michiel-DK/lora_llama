@@ -1,5 +1,5 @@
 from pt_app.trainer.trainer import LloraTrainer  # Import your existing trainer
-from pt_app.metrics import MTEvaluator, MTTrainingCallback
+from pt_app.metrics import MTEvaluator, MTTrainingCallback, extract_validation_pairs_from_dataset
 from params import *
 from mlx_lm_lora.trainer.sft_trainer import SFTTrainingArgs, train_sft
 from mlx_lm.tuner.callbacks import TrainingCallback
@@ -32,6 +32,11 @@ class LloraTrainerWithMT(LloraTrainer):
         timing = datetime.now().strftime("%Y%m%d_%H%M%S")
         new_adapter_path = os.path.join(ADAPTER_PATH, f'{timing}_epoch{iters}.safetensors')
         
+        validation_pairs = extract_validation_pairs_from_dataset(
+            val_set, 
+            self.tokenizer, 
+            num_samples=20  # or however many you want
+)
         # Choose callback based on use_mt_metrics flag
         if use_mt_metrics:
             callback = MTTrainingCallback(
@@ -41,6 +46,7 @@ class LloraTrainerWithMT(LloraTrainer):
                 log_dir=os.path.join("./logs", f"mt_{timing}"),
                 eval_samples=50,  # Adjust based on your needs
                 train_dataset_size=len(train_set),  # Pass the size of your training set
+                validation_pairs=validation_pairs,
                 batch_size=self.batch_size,         # Pass your batch size 
                 prompt_template="Translate to Portuguese: {source}\n\nPortuguese:"
             )

@@ -1,15 +1,15 @@
-# mt_metrics.py
-
 import sacrebleu
 from rouge_score import rouge_scorer
 import evaluate
 import numpy as np
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 import json
 import os
 from datetime import datetime
 import mlx.core as mx
+import re
+import ast
 
 from mlx_lm.tuner.callbacks import TrainingCallback
 from pt_app.trainer.mlx_utils import *
@@ -116,10 +116,12 @@ class MTTrainingCallback(TrainingCallback):
                  tokenizer,
                  mt_evaluator: MTEvaluator,
                  log_dir: str = "./logs",
-                eval_samples=8,
-                train_dataset_size=None,  # Add this parameter  
-                batch_size=None,         # Add this parameter
-                 prompt_template: str = "Translate to Portuguese: {source}\n\nPortuguese:"):
+                 eval_samples=8,
+                 train_dataset_size=None,
+                 batch_size=None,
+                 prompt_template: str = "Translate to Portuguese: {source}\n\nPortuguese:",
+                 # Add this parameter to pass in the actual source/target pairs
+                 validation_pairs: List[Dict[str, str]] = None):
         
         super().__init__()
         self.model = model
@@ -132,6 +134,9 @@ class MTTrainingCallback(TrainingCallback):
         self.prompt_template = prompt_template
         self.metrics_history = []
         
+        # Store the validation pairs directly
+        self.validation_pairs = validation_pairs
+        
         if train_dataset_size and batch_size:
             self.steps_per_epoch = max(1, train_dataset_size // batch_size)
             print(f"[INFO] MT Callback: {train_dataset_size} samples, {batch_size} batch size")
@@ -141,39 +146,64 @@ class MTTrainingCallback(TrainingCallback):
         
     def on_step_end(self, step, **kwargs):
         """Debug callback system"""
-        if step % 10 == 0:  # Same frequency as steps_per_eval
+        if step % 10 == 0:
             print(f"[DEBUG] on_step_end called at step {step}")
-        
+    
     def on_eval_begin(self, **kwargs):
         """Debug evaluation start"""
         print(f"[DEBUG] on_eval_begin called with kwargs: {list(kwargs.keys())}")
     
     def on_eval_end(self, **kwargs):
-        """Compute MT metrics after validation - optimized"""
-        val_dataset = kwargs.get('val_dataset', None)
+        """Compute MT metrics after validation"""
         val_loss = kwargs.get('val_loss', 0.0)
         step = kwargs.get('step', 0)
         total_steps = kwargs.get('iters', 0)
         
-        if val_dataset is None:
-            return
+        # If we don't have validation pairs, try to extract from the dataset
+        if self.validation_pairs is None:
+            print("[WARNING] No validation pairs provided to callback. Attempting extraction...")
+            val_dataset = kwargs.get('val_dataset', None)
+            if val_dataset is None:
+                print("[ERROR] No validation dataset available")
+                return
+            
+            # Try to extract pairs from dataset
+            self.validation_pairs = []
+            for i in range(min(20, len(val_dataset))):
+                token_ids = val_dataset[i]
+                full_text = self.tokenizer.decode(token_ids)
+                
+                # Simple extraction - look for the dictionary pattern
+                match = re.search(r"\{'en':\s*'([^']*)',\s*'pt':\s*'([^']*)'\}", full_text)
+                if not match:
+                    match = re.search(r'\{"en":\s*"([^"]*)",\s*"pt":\s*"([^"]*)"\}', full_text)
+                
+                if match:
+                    self.validation_pairs.append({
+                        'en': match.group(1),
+                        'pt': match.group(2)
+                    })
+            
+            if not self.validation_pairs:
+                print("[ERROR] Could not extract any validation pairs")
+                return
+            
+            print(f"[INFO] Extracted {len(self.validation_pairs)} validation pairs")
         
         # Calculate steps per epoch dynamically
         if hasattr(self, 'train_dataset_size') and hasattr(self, 'batch_size'):
             steps_per_epoch = self.train_dataset_size // self.batch_size
         else:
-            # Estimate based on common values
             steps_per_epoch = 300
         
-        # Determine if this is a milestone step worth doing full evaluation
+        # Determine if this is a milestone step
         is_first_or_last = (step <= 5 or step >= total_steps - 5)
-        is_epoch_boundary = (step % steps_per_epoch < 5)  # Within 5 steps of epoch boundary
+        is_epoch_boundary = (step % steps_per_epoch < 5)
         
-        # Compute metrics less frequently for regular steps
-        metrics_interval = max(steps_per_epoch // 2, 50)  # Half epoch or at least every 50 steps
+        # Compute metrics less frequently
+        metrics_interval = max(steps_per_epoch // 2, 50)
         compute_metrics = (is_first_or_last or is_epoch_boundary or step % metrics_interval == 0)
         
-        # For non-metric steps, just record validation loss
         if not compute_metrics:
             self.metrics_history.append({
                 'step': step,
@@ -185,107 +215,54 @@ class MTTrainingCallback(TrainingCallback):
         
         print(f"\n[MT METRICS] Computing translation metrics at step {step}...")
         
-        # Choose number of evaluation samples
-        if is_first_or_last or is_epoch_boundary:
-            num_eval = min(15, len(val_dataset))  # More samples at important points
-        else:
-            num_eval = min(8, len(val_dataset))   # Fewer samples for regular checks
-            
-            
+        # Use the stored validation pairs
+        num_eval = min(self.eval_samples, len(self.validation_pairs))
+        
         sources = []
         references = []
         predictions = []
         
-        # 2. Extract text from validation samples
-        print(f"[INFO] Extracting text from {num_eval} samples...")
+        print(f"[INFO] Generating {num_eval} translations...")
         for i in range(num_eval):
+            pair = self.validation_pairs[i]
+            source_text = pair['en']
+            target_text = pair['pt']
+            
+            sources.append(source_text)
+            references.append(target_text)
+            
             try:
-                # Decode tokenized sample
-                token_ids = val_dataset[i]
-                full_text = self.tokenizer.decode(token_ids)
-                
-                # Your existing extraction code
-                en_pattern = "'en': "
-                en_idx = full_text.find(en_pattern)
-                if en_idx == -1:
-                    en_pattern = '"en": '
-                    en_idx = full_text.find(en_pattern)
-                
-                pt_pattern = "'pt': "
-                pt_idx = full_text.find(pt_pattern)
-                if pt_idx == -1:
-                    pt_pattern = '"pt": '
-                    pt_idx = full_text.find(pt_pattern)
-                
-                if en_idx == -1 or pt_idx == -1:
-                    continue
-                
-                # Extract source (English)
-                quote_start = full_text.find('"', en_idx + len(en_pattern))
-                if quote_start == -1:
-                    quote_start = full_text.find("'", en_idx + len(en_pattern))
-                quote_end = full_text.find('"', quote_start + 1)
-                if quote_end == -1:
-                    quote_end = full_text.find("'", quote_start + 1)
-                source_text = full_text[quote_start+1:quote_end]
-                
-                # Extract target (Portuguese)
-                quote_start = full_text.find("'", pt_idx + len(pt_pattern))
-                if quote_start == -1:
-                    quote_start = full_text.find('"', pt_idx + len(pt_pattern))
-                quote_end = full_text.find("'", quote_start + 1)
-                if quote_end == -1:
-                    quote_end = full_text.find('"', quote_start + 1)
-                target_text = full_text[quote_start+1:quote_end]
-                
-                # Store extracted texts
-                sources.append(source_text)
-                references.append(target_text)
-                
-                print(f"[INFO] Sample {i+1}:")
-                print(f"  Source: {source_text[:50]}...")
-                print(f"  Target: {target_text[:50]}...")
-                
-            except Exception as e:
-                print(f"[WARNING] Error extracting text from sample {i}: {e}")
-        
-        # 3. Generate translations
-        print(f"[INFO] Generating {len(sources)} translations...")
-        for i, source_text in enumerate(sources):
-            try:
-                # Create prompt
+                # Generate translation
                 prompt = self.prompt_template.format(source=source_text)
                 
-                # Use optimized generation
-                print(f"[INFO] Generating translation {i+1}/{len(sources)}...")
                 full_output = mlx_generate_optimized(
                     model=self.model,
                     tokenizer=self.tokenizer,
                     prompt=prompt,
-                    max_tokens=75  # Reduced for speed
+                    max_tokens=75
                 )
                 
                 # Extract translation
                 translation = full_output.replace(prompt, "").strip()
                 predictions.append(translation)
                 
-                print(f"  Translation: {translation[:50]}...")
+                if i < 3:  # Show first few
+                    print(f"  Sample {i+1}:")
+                    print(f"    Source: {source_text[:50]}...")
+                    print(f"    Reference: {target_text[:50]}...")
+                    print(f"    Generated: {translation[:50]}...")
                 
             except Exception as e:
                 print(f"[WARNING] Error generating translation {i+1}: {e}")
-                import traceback
-                traceback.print_exc()
-                predictions.append("")  # Add empty string as placeholder
+                predictions.append("")
         
-        # 4. Compute metrics
+        # Compute metrics
         if predictions and len(predictions) == len(references):
             try:
-                # Calculate metrics
                 metrics = self.evaluator.compute_metrics(predictions, references)
-                #metrics = self.evaluator.compute_metrics(predictions, references, metrics=['bleu', 'chrf'])  # Only compute essential metrics
                 print(self.evaluator.format_metrics(metrics))
                 
-                # Store in history
+                # Store metrics
                 self.metrics_history.append({
                     'step': step,
                     'val_loss': float(val_loss),
@@ -299,30 +276,120 @@ class MTTrainingCallback(TrainingCallback):
                     }
                 })
                 
-                # Save to file
+                # Save metrics
                 metrics_file = os.path.join(self.log_dir, "mt_metrics_history.json")
                 with open(metrics_file, 'w') as f:
                     json.dump(self.metrics_history, f, indent=2)
                 
-                # Save sample translations
-                samples_file = os.path.join(self.log_dir, f"translations_step_{step}.json")
-                samples_to_save = []
-                for i in range(min(len(predictions), len(sources), len(references))):
-                    samples_to_save.append({
-                        'source_en': sources[i],
-                        'reference_pt': references[i],
-                        'predicted_pt': predictions[i]
-                    })
-                
-                with open(samples_file, 'w') as f:
-                    json.dump(samples_to_save, f, indent=2, ensure_ascii=False)
-                
-                print(f"[INFO] Saved metrics at step {step}")
+                print(f"[INFO] Metrics saved to {metrics_file}")
                 
             except Exception as e:
-                print(f"[WARNING] Error computing metrics: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"[ERROR] Failed to compute metrics: {e}")
         else:
-            print("[WARNING] No predictions generated or mismatched lengths, skipping metrics calculation")
-            import ipdb;ipdb.set_trace()
+            print(f"[ERROR] Failed to generate all translations")
+
+
+# Helper function to prepare validation pairs from your dataset
+def extract_validation_pairs_from_dataset(dataset, tokenizer, num_samples=20):
+    """
+    Extract validation pairs from a tokenized dataset.
+    Handles both dict and tensor formats.
+    """
+    import re
+    import ast
+    
+    validation_pairs = []
+    
+    for i in range(min(num_samples, len(dataset))):
+        item = dataset[i]
+        
+        # Handle different dataset formats
+        if isinstance(item, dict):
+            # Dataset returns a dictionary - get the input_ids
+            if 'input_ids' in item:
+                token_ids = item['input_ids']
+            elif 'tokens' in item:
+                token_ids = item['tokens']
+            else:
+                # Try to find any key that looks like token ids
+                for key in item.keys():
+                    if 'id' in key.lower() or 'token' in key.lower():
+                        token_ids = item[key]
+                        break
+                else:
+                    print(f"[WARNING] Sample {i}: Could not find token ids in keys: {list(item.keys())}")
+                    continue
+        else:
+            # Assume it's already token ids
+            token_ids = item
+        
+        # Decode the tokens
+        try:
+            full_text = tokenizer.decode(token_ids)
+        except Exception as e:
+            print(f"[WARNING] Sample {i}: Failed to decode: {e}")
+            continue
+        
+        # Try different extraction patterns for the dictionary
+        extracted = False
+        
+        # Pattern 1: Simple regex for clean dictionaries
+        patterns = [
+            r"\{'en':\s*'([^']*)',\s*'pt':\s*'([^']*)'\}",
+            r'\{"en":\s*"([^"]*)",\s*"pt":\s*"([^"]*)"\}',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, full_text)
+            if match:
+                validation_pairs.append({
+                    'en': match.group(1),
+                    'pt': match.group(2)
+                })
+                extracted = True
+                break
+        
+        # Pattern 2: Try ast.literal_eval for complex cases
+        if not extracted:
+            dict_start = full_text.find("{'en':")
+            if dict_start == -1:
+                dict_start = full_text.find('{"en":')
+            
+            if dict_start != -1:
+                # Find the matching closing brace
+                brace_count = 0
+                idx = dict_start
+                dict_end = -1
+                
+                for j in range(idx, len(full_text)):
+                    if full_text[j] == '{':
+                        brace_count += 1
+                    elif full_text[j] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            dict_end = j
+                            break
+                
+                if dict_end != -1:
+                    dict_str = full_text[dict_start:dict_end + 1]
+                    try:
+                        # Try to parse as Python dict
+                        pair_dict = ast.literal_eval(dict_str)
+                        if isinstance(pair_dict, dict) and 'en' in pair_dict and 'pt' in pair_dict:
+                            validation_pairs.append({
+                                'en': pair_dict['en'],
+                                'pt': pair_dict['pt']
+                            })
+                            extracted = True
+                    except:
+                        pass
+        
+        if extracted and len(validation_pairs) <= 3:
+            # Show first few extracted pairs
+            pair = validation_pairs[-1]
+            print(f"[INFO] Extracted pair {len(validation_pairs)}:")
+            print(f"  EN: {pair['en'][:50]}...")
+            print(f"  PT: {pair['pt'][:50]}...")
+    
+    print(f"[INFO] Successfully extracted {len(validation_pairs)} validation pairs")
+    return validation_pairs
