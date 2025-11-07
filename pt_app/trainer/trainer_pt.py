@@ -1,12 +1,12 @@
-# hf_trainer.py
+# trainer_pt.py - Complete integrated training pipeline
 import os
 import torch
 import json
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 from tqdm import tqdm
-import params  # Import your params file
 
+import params
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -94,7 +94,7 @@ class HFTrainer:
         if self.device.type == "cuda":
             torch_dtype = torch.float16
         elif self.device.type == "mps":
-            torch_dtype = torch.float16  # MPS supports float16
+            torch_dtype = torch.float16
         else:
             torch_dtype = torch.float32
         
@@ -104,7 +104,7 @@ class HFTrainer:
                 self.model_name,
                 quantization_config=bnb_config,
                 device_map="auto" if self.device.type == "cuda" else None,
-                torch_dtype=torch_dtype,
+                dtype=torch_dtype,
                 trust_remote_code=True,
                 cache_dir=self.cache_dir,
                 token=params.HF_TOKEN if params.HF_TOKEN else None,
@@ -190,13 +190,17 @@ class HFTrainer:
         # Update training arguments with device-specific settings
         training_args_dict = self.training_args.copy()
         training_args_dict["output_dir"] = output_dir
-        training_args_dict["fp16"] = self.device.type == "cuda"
-        training_args_dict["bf16"] = False  # Could enable on newer GPUs
         
-        # Handle MPS-specific settings
-        if self.device.type == "mps":
-            training_args_dict["fp16"] = False  # MPS doesn't support fp16 training yet
-            training_args_dict["use_mps_device"] = True
+        # Device-specific settings
+        if self.device.type == "cuda":
+            training_args_dict["fp16"] = True
+        elif self.device.type == "mps":
+            training_args_dict["fp16"] = False
+        else:
+            training_args_dict["fp16"] = False
+        
+        # Remove any MLX-specific parameters
+        training_args_dict.pop("use_mps_device", None)
         
         # Create training arguments
         training_args = TrainingArguments(**training_args_dict)
@@ -205,11 +209,8 @@ class HFTrainer:
         data_collator = DataCollatorForLanguageModeling(
             tokenizer=self.tokenizer,
             mlm=False,
-            pad_to_multiple_of=8,  # Efficiency optimization
+            pad_to_multiple_of=8,
         )
-        
-        # Custom callbacks (optional)
-        callbacks = []
         
         # Create trainer
         trainer = Trainer(
@@ -218,8 +219,7 @@ class HFTrainer:
             train_dataset=train_dataset,
             eval_dataset=val_dataset,
             data_collator=data_collator,
-            tokenizer=self.tokenizer,
-            callbacks=callbacks,
+            processing_class=self.tokenizer,
         )
         
         # Train
@@ -267,7 +267,6 @@ class HFTrainer:
         
         if adapter_path and adapter_path != self.adapter_path:
             print(f"[INFO] Loading adapter from {adapter_path}")
-            # Reload model with adapter
             base_model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 device_map="auto" if self.device.type == "cuda" else None,
@@ -290,7 +289,7 @@ class HFTrainer:
             batch_size=batch_size,
             collate_fn=data_collator,
             shuffle=False,
-            num_workers=0,  # Important for MPS
+            num_workers=0,
         )
         
         # Evaluation
@@ -302,13 +301,9 @@ class HFTrainer:
         
         with torch.no_grad():
             for batch in tqdm(test_loader, desc="Testing"):
-                # Move batch to device
                 batch = {k: v.to(self.device) for k, v in batch.items()}
-                
-                # Forward pass
                 outputs = self.model(**batch)
                 
-                # Calculate loss
                 shift_logits = outputs.logits[..., :-1, :].contiguous()
                 shift_labels = batch["labels"][..., 1:].contiguous()
                 
@@ -344,7 +339,6 @@ class HFTrainer:
         print(f"Samples:    {len(test_dataset)}")
         print(f"{'='*50}\n")
         
-        # Save results
         if adapter_path:
             results_path = os.path.join(
                 os.path.dirname(adapter_path),
@@ -374,39 +368,72 @@ class HFTrainer:
         print(f"{'='*50}\n")
 
 
+# Main execution
 if __name__ == "__main__":
     from pt_app.data.opus_dataset import LanguageDS
     
+    print("="*60)
+    print("PORTUGUESE-ENGLISH TRANSLATION MODEL TRAINING")
+    print("="*60)
+    
     # Initialize trainer
+    print("\n[STEP 1] Initializing trainer...")
     trainer = HFTrainer()
     
     # Get model and tokenizer
+    print("\n[STEP 2] Loading model and tokenizer...")
     model, tokenizer = trainer.get_model()
     optimizer = trainer.get_optimizer()
     
-    # Load your dataset
-    print("[INFO] Loading datasets...")
-    train, val, test = LanguageDS(
+    # Load datasets
+    print("\n[STEP 3] Loading and processing datasets...")
+    language_ds = LanguageDS(
         tokenizer=tokenizer, 
-        dataset='opus_books'
-    ).create_datasets(save=True)
+        dataset='opus_books'  # or 'kaggle'
+    )
+    train_dataset, val_dataset, test_dataset = language_ds.create_datasets(save=True)
     
-    # Optionally limit dataset size for testing
-    if params.DATASET_SAMPLES:
-        train = train.select(range(min(params.DATASET_SAMPLES, len(train))))
-        if val:
-            val = val.select(range(min(params.DATASET_SAMPLES//10, len(val))))
-        if test:
-            test = test.select(range(min(params.DATASET_SAMPLES//10, len(test))))
-    
-    print(f"[INFO] Dataset sizes - Train: {len(train)}, Val: {len(val) if val else 0}, Test: {len(test) if test else 0}")
+    print(f"\nDataset sizes:")
+    print(f"  Train: {len(train_dataset)}")
+    print(f"  Val:   {len(val_dataset)}")
+    print(f"  Test:  {len(test_dataset)}")
     
     # Train the model
-    adapter_path = trainer.train(train_set=train, val_set=val)
+    print("\n[STEP 4] Training model...")
+    adapter_path = trainer.train(train_dataset, val_dataset)
     
     # Test the trained model
-    if test:
+    print("\n[STEP 5] Testing model...")
+    if test_dataset:
         test_results = trainer.test(
-            test_dataset=test,
+            test_dataset=test_dataset,
             adapter_path=adapter_path
         )
+    
+    # Generate sample translation
+    print("\n[STEP 6] Testing translation capability...")
+    test_prompt = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+        You are a helpful assistant that translates English text to Portuguese. Provide accurate and natural translations.<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+        Hello, how are you?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+    
+    inputs = tokenizer(test_prompt, return_tensors="pt").to(trainer.device)
+    
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=100,
+            temperature=0.7,
+            do_sample=True,
+            top_p=0.9,
+        )
+    
+    response = tokenizer.decode(outputs[0], skip_special_tokens=False)
+    print(f"\nGenerated translation:\n{response}")
+    
+    print("\n" + "="*60)
+    print("TRAINING COMPLETE")
+    print("="*60)
