@@ -9,7 +9,7 @@ USER_NAME = "mlx-community"
 ADAPTER_PATH = "./adapters/"
 MAX_SEQ_LENGTH = 512
 
-DATASET_SAMPLES = None
+DATASET_SAMPLES = 200
 
 BATCH_SIZE = 4
 EPOCHS = 2
@@ -67,8 +67,8 @@ TRAINING_ARGS = {
     "max_seq_length": MAX_SEQ_LENGTH,
     "grad_checkpoint": True,        # Gradient checkpointing for memory efficiency
     "steps_per_report": 50,         # Log metrics every N steps
-    "steps_per_eval": 300,           # Evaluate every N steps
-    "steps_per_save": 300,           # Save checkpoint every N steps
+    "steps_per_eval": 20,           # Evaluate every N steps
+    "steps_per_save": 20,           # Save checkpoint every N steps
     "val_batches": 1,               # Number of validation batches to run
     "warmup_steps": 100,            # Learning rate warmup steps
     "grad_clip": 1.0,               # Gradient clipping threshold

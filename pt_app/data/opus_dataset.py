@@ -37,7 +37,7 @@ class LanguageDS():
             "target_lang": "pt"
         }
         """
-    
+            
         # Handle different input formats
         if "english" in sample and "portuguese" in sample:
             english_text = sample["english"]
@@ -60,7 +60,6 @@ class LanguageDS():
         
         # Keep just the instruction without redundant prompt
         #instruction = "Translate the following English text to Portuguese:"
-        
         # Format as conversation with proper assistant response
         conversation = [
             {"role": "system", "content": self.system_prompt},
@@ -74,7 +73,7 @@ class LanguageDS():
             tokenize=False,
             add_generation_prompt=False
         )
-        
+                
         return sample
 
     def create_translation_exercises_dataset(self):
@@ -94,6 +93,7 @@ class LanguageDS():
             df = pd.read_csv(file, sep="\t", names=["En", "Pt", "NAN"])[["En", "Pt"]]
             # Make sure the format matches what format_translation_prompt expects
             df = df.rename(columns={"En": "english", "Pt": "portuguese"})
+                        
             datasets.append(df)
 
         return datasets
@@ -101,7 +101,7 @@ class LanguageDS():
     def create_datasets(self, save=False):
         
         datasets = self.create_translation_exercises_dataset()
-        
+                
         if datasets:
             combined_dataset = concatenate_datasets(datasets)
             
@@ -113,7 +113,7 @@ class LanguageDS():
             remove_columns=combined_dataset.column_names,
             desc="Formatting translations"
             )
-        
+                
         #     # Filter out samples that are too long
         # def filter_length(sample):
         #     return len(self.tokenizer.encode(sample["text"])) <= MAX_SEQ_LENGTH
@@ -135,19 +135,26 @@ class LanguageDS():
             truncate_text,
             desc="Truncating long texts"
         )
-
+        
         # Split into train and validation
         train_dataset, valid_dataset = formatted_dataset.train_test_split(
             test_size=0.1, 
             seed=42
         ).values()
         
+        train_dataset, test_dataset = train_dataset.train_test_split(
+            test_size=0.1, 
+            seed=42
+        ).values()
+
         if save:
             train_dataset.save_to_disk("./datasets/opus/pt_en_train_dataset")
             valid_dataset.save_to_disk("./datasets/opus/pt_en_valid_dataset")
+            test_dataset.save_to_disk("./datasets/opus/pt_en_test_dataset")
             
         
         train_set = TextDataset(train_dataset, self.tokenizer, text_key='text')
         valid_set = TextDataset(valid_dataset, self.tokenizer, text_key='text')
-        
-        return train_set, valid_set
+        test_set = TextDataset(test_dataset, self.tokenizer, text_key='text')
+
+        return train_set, valid_set, test_set
