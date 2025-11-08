@@ -1,215 +1,220 @@
-# trainer_pt.py - Complete integrated training pipeline
+# hf_trainer_final_fix.py
 import os
 import torch
 import json
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 from tqdm import tqdm
+import warnings
+warnings.filterwarnings("ignore", message=".*pin_memory.*")
+warnings.filterwarnings("ignore", message=".*gradient checkpointing.*")
 
-import params
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     TrainingArguments,
     Trainer,
     DataCollatorForLanguageModeling,
-    BitsAndBytesConfig
 )
 from peft import (
     LoraConfig, 
     get_peft_model, 
-    TaskType, 
-    prepare_model_for_kbit_training,
+    TaskType,
     PeftModel
 )
-from torch.utils.data import DataLoader
-import torch.nn.functional as F
+import params
 
 
-class HFTrainer:
-    """HuggingFace Trainer using params.py configuration"""
+class HFTrainerFinal:
+    """FINAL WORKING trainer for Llama models on MPS"""
     
     def __init__(self):
-        # Import all configs from params
         self.model_name = params.MODEL_NAME
         self.adapter_path = params.ADAPTER_PATH
         self.output_dir = params.OUTPUT_DIR
         self.cache_dir = params.CACHE_DIR
         
-        # Training configs
         self.batch_size = params.BATCH_SIZE
         self.epochs = params.EPOCHS
         self.max_seq_length = params.MAX_SEQ_LENGTH
         
-        # Configs
-        self.lora_config = params.LORA_CONFIG
-        self.optimizer_config = params.OPTIMIZER_CONFIG
-        self.training_args = params.TRAINING_ARGS
-        self.quantization_config = params.QUANTIZATION_CONFIG
-        
         # Device setup
-        self.device = self._setup_device()
+        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        print(f"[INFO] Using device: {self.device}")
         
-        # Model components
         self.model = None
         self.tokenizer = None
-        self.optimizer = None
         
         # Create directories
         os.makedirs(self.adapter_path, exist_ok=True)
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(self.cache_dir, exist_ok=True)
-        
-    def _setup_device(self):
-        """Setup compute device with proper detection"""
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            print(f"[INFO] Using CUDA: {torch.cuda.get_device_name()}")
-            print(f"[INFO] Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-        elif torch.backends.mps.is_available():
-            device = torch.device("mps")
-            print("[INFO] Using Apple Silicon GPU (MPS)")
-        else:
-            device = torch.device("cpu")
-            print("[WARNING] Using CPU - this will be slow!")
-        return device
     
     def get_model(self) -> Tuple[Any, Any]:
-        """Load model and tokenizer with quantization and LoRA"""
+        """Load model with WORKING configuration for MPS"""
         
         print(f"[INFO] Loading model: {self.model_name}")
         
-        # Setup quantization (only for CUDA)
-        bnb_config = None
-        if self.quantization_config["load_in_4bit"] and self.device.type == "cuda":
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=getattr(torch, self.quantization_config["bnb_4bit_compute_dtype"]),
-                bnb_4bit_quant_type=self.quantization_config["bnb_4bit_quant_type"],
-                bnb_4bit_use_double_quant=self.quantization_config.get("bnb_4bit_use_double_quant", True),
-            )
-            print("[INFO] Using 4-bit quantization (BitsAndBytes)")
+        # CRITICAL FIX 1: Load in float32 for MPS
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_name,
+            torch_dtype=torch.float32,  # MPS needs float32
+            trust_remote_code=True,
+            cache_dir=self.cache_dir,
+            token=params.HF_TOKEN,
+            use_cache=False,  # CRITICAL: Disable cache
+            low_cpu_mem_usage=True,
+        )
         
-        # Determine dtype
-        if self.device.type == "cuda":
-            torch_dtype = torch.float16
-        elif self.device.type == "mps":
-            torch_dtype = torch.float16
-        else:
-            torch_dtype = torch.float32
+        # CRITICAL FIX 2: Explicitly disable gradient checkpointing
+        self.model.gradient_checkpointing_disable()
+        self.model.config.use_cache = False
+        self.model.config.gradient_checkpointing = False
         
-        # Load model
-        try:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                quantization_config=bnb_config,
-                device_map="auto" if self.device.type == "cuda" else None,
-                dtype=torch_dtype,
-                trust_remote_code=True,
-                cache_dir=self.cache_dir,
-                token=params.HF_TOKEN if params.HF_TOKEN else None,
-            )
-        except Exception as e:
-            print(f"[ERROR] Failed to load model: {e}")
-            print("[INFO] Trying without authentication...")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                quantization_config=bnb_config,
-                device_map="auto" if self.device.type == "cuda" else None,
-                torch_dtype=torch_dtype,
-                trust_remote_code=True,
-                cache_dir=self.cache_dir,
-            )
+        # For each layer, ensure gradient checkpointing is off
+        if hasattr(self.model, 'model'):
+            if hasattr(self.model.model, 'layers'):
+                for layer in self.model.model.layers:
+                    if hasattr(layer, 'gradient_checkpointing'):
+                        layer.gradient_checkpointing = False
         
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name,
             trust_remote_code=True,
             cache_dir=self.cache_dir,
-            token=params.HF_TOKEN if params.HF_TOKEN else None,
+            token=params.HF_TOKEN,
         )
         
-        # Setup padding
+        # CRITICAL FIX 3: Proper padding for Llama
         if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-            self.tokenizer.padding_side = "right"
+            self.tokenizer.pad_token = "<|finetune_right_pad_id|>"  # Special pad token
+            self.tokenizer.pad_token_id = 128004  # Llama-3 specific
         
-        # Prepare for k-bit training if using quantization
-        if bnb_config:
-            self.model = prepare_model_for_kbit_training(
-                self.model,
-                use_gradient_checkpointing=self.training_args.get("gradient_checkpointing", True)
-            )
-        elif self.training_args.get("gradient_checkpointing", True):
-            self.model.gradient_checkpointing_enable()
-        
-        # Setup LoRA
+        # CRITICAL FIX 4: Simple LoRA config that works
         lora_config = LoraConfig(
-            r=self.lora_config["r"],
-            lora_alpha=self.lora_config["lora_alpha"],
-            lora_dropout=self.lora_config["lora_dropout"],
-            target_modules=self.lora_config["target_modules"],
-            bias=self.lora_config["bias"],
-            task_type=getattr(TaskType, self.lora_config["task_type"]),
+            r=16,  # Increase rank for better learning
+            lora_alpha=32,
+            lora_dropout=0.05,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],  # All attention
+            bias="none",
+            task_type=TaskType.CAUSAL_LM,
+            inference_mode=False,
         )
         
+        # Apply LoRA
         self.model = get_peft_model(self.model, lora_config)
         
-        # Print trainable parameters
-        self._print_trainable_parameters()
+        # CRITICAL FIX 5: Ensure model is in training mode
+        self.model.train()
         
-        # Move to device if not using auto device map
-        if self.device.type == "mps":
-            self.model = self.model.to(self.device)
+        # Move to MPS
+        self.model = self.model.to(self.device)
+        
+        # Print stats
+        trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.model.parameters())
+        print(f"[INFO] Trainable: {trainable:,} / {total:,} ({100*trainable/total:.2f}%)")
         
         return self.model, self.tokenizer
     
-    def get_optimizer(self) -> torch.optim.Optimizer:
-        """Create AdamW optimizer using params configuration"""
+    def prepare_dataset(self, dataset):
+        """Universal dataset preparation for all model sizes"""
         
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=self.optimizer_config["learning_rate"],
-            betas=(
-                self.optimizer_config["adam_beta1"],
-                self.optimizer_config["adam_beta2"]
-            ),
-            eps=self.optimizer_config["adam_epsilon"],
-            weight_decay=self.optimizer_config["weight_decay"],
+        # Works for 1B, 3B, 8B+ models
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+        
+        def tokenize_function(examples):
+            # Same tokenization for all sizes
+            model_inputs = self.tokenizer(
+                examples["text"],
+                truncation=True,
+                padding=False,  # Universal best practice
+                max_length=self.max_seq_length,
+                return_tensors=None,
+            )
+            
+            model_inputs["labels"] = model_inputs["input_ids"].copy()
+            return model_inputs
+        
+        # Disable multiprocessing for MPS (all sizes)
+        tokenized = dataset.map(
+            tokenize_function,
+            batched=True,
+            remove_columns=dataset.column_names,
+            desc="Tokenizing dataset",
+            num_proc=None,  # Universal for MPS
         )
         
-        print(f"[INFO] Optimizer configured with lr={self.optimizer_config['learning_rate']}")
-        return self.optimizer
+        return tokenized
     
     def train(self, train_dataset, val_dataset=None):
-        """Train the model using HuggingFace Trainer"""
+        """Training with WORKING configuration"""
+        
+        # Prepare datasets
+        print("[INFO] Preparing datasets...")
+        # train_dataset = self.prepare_dataset(train_dataset)
+        # if val_dataset:
+        #     val_dataset = self.prepare_dataset(val_dataset)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = os.path.join(self.output_dir, f"run_{timestamp}")
         
-        # Update training arguments with device-specific settings
-        training_args_dict = self.training_args.copy()
-        training_args_dict["output_dir"] = output_dir
-        
-        # Device-specific settings
-        if self.device.type == "cuda":
-            training_args_dict["fp16"] = True
-        elif self.device.type == "mps":
-            training_args_dict["fp16"] = False
-        else:
-            training_args_dict["fp16"] = False
-        
-        # Remove any MLX-specific parameters
-        training_args_dict.pop("use_mps_device", None)
-        
-        # Create training arguments
-        training_args = TrainingArguments(**training_args_dict)
+        # CRITICAL: Working training arguments for MPS
+        training_args = TrainingArguments(
+            output_dir=output_dir,
+            num_train_epochs=self.epochs,
+            per_device_train_batch_size=1,  # Small batch for MPS
+            per_device_eval_batch_size=1,
+            gradient_accumulation_steps=4,  # Accumulate to effective batch of 4
+            warmup_steps=20,
+            learning_rate=3e-4,  # Good for LoRA
+            weight_decay=0.001,
+            logging_steps=1,
+            save_strategy="steps",
+            save_steps=20,
+            eval_strategy="steps" if val_dataset else "no",
+            eval_steps=20 if val_dataset else None,
+            save_total_limit=2,
+            load_best_model_at_end=False,  # Disable to avoid issues
+            metric_for_best_model="loss",
+            greater_is_better=False,
+            
+            # CRITICAL MPS settings
+            fp16=False,  # MPS doesn't support fp16 training
+            bf16=False,
+            gradient_checkpointing=False,  # MUST BE FALSE
+            gradient_checkpointing_kwargs=None,
+            
+            # Optimizer settings
+            optim="adamw_torch",
+            adam_beta1=0.9,
+            adam_beta2=0.999,
+            adam_epsilon=1e-8,
+            max_grad_norm=1.0,
+            lr_scheduler_type="cosine",
+            
+            # Other settings
+            report_to="none",
+            run_name=f"translation_{timestamp}",
+            disable_tqdm=False,
+            seed=42,
+            data_seed=42,
+            
+            # MPS specific
+            use_mps_device=True,
+            dataloader_num_workers=0,  # Must be 0 for MPS
+            dataloader_pin_memory=False,  # Must be False for MPS
+        )
         
         # Data collator
         data_collator = DataCollatorForLanguageModeling(
             tokenizer=self.tokenizer,
             mlm=False,
-            pad_to_multiple_of=8,
+            pad_to_multiple_of=None,  # Don't pad additionally
+            return_tensors="pt",
         )
         
         # Create trainer
@@ -219,221 +224,129 @@ class HFTrainer:
             train_dataset=train_dataset,
             eval_dataset=val_dataset,
             data_collator=data_collator,
-            processing_class=self.tokenizer,
+            tokenizer=self.tokenizer,
         )
+        
+        # CRITICAL: Ensure gradient checkpointing is OFF before training
+        trainer.model.gradient_checkpointing_disable()
+        
+        print(f"[INFO] Starting training...")
+        print(f"[INFO] Train samples: {len(train_dataset)}")
+        print(f"[INFO] Epochs: {self.epochs}")
+        print(f"[INFO] Steps per epoch: {len(train_dataset) // (1 * 4)}")  # batch_size * grad_accum
         
         # Train
-        print(f"[INFO] Starting training...")
-        print(f"[INFO] Output directory: {output_dir}")
+        train_result = trainer.train()
         
-        try:
-            train_result = trainer.train()
-        except KeyboardInterrupt:
-            print("\n[INFO] Training interrupted by user")
-            trainer.save_model(os.path.join(output_dir, "interrupted_checkpoint"))
-            return output_dir
-        
-        # Save final model
-        final_adapter_path = os.path.join(
-            self.adapter_path, 
-            f"{timestamp}_final"
-        )
+        # Save adapter
+        final_adapter_path = os.path.join(self.adapter_path, f"{timestamp}_final")
         trainer.save_model(final_adapter_path)
-        print(f"[INFO] Model saved to {final_adapter_path}")
         
-        # Save training metrics
-        metrics = {
-            "train_loss": train_result.training_loss,
-            "train_samples": len(train_dataset),
-            "val_samples": len(val_dataset) if val_dataset else 0,
-            "timestamp": timestamp,
-            "model_name": self.model_name,
-            "effective_batch_size": self.batch_size * self.training_args["gradient_accumulation_steps"],
-            "device": str(self.device),
-        }
-        
-        with open(os.path.join(output_dir, "training_metrics.json"), "w") as f:
-            json.dump(metrics, f, indent=2, default=str)
+        print(f"[INFO] Training complete!")
+        print(f"[INFO] Final loss: {train_result.training_loss:.4f}")
+        print(f"[INFO] Adapter saved to: {final_adapter_path}")
         
         return final_adapter_path
     
-    def test(self, 
-             test_dataset,
-             adapter_path: Optional[str] = None,
-             batch_size: Optional[int] = None) -> Dict[str, Any]:
-        """Test the model on a test dataset"""
-        
-        batch_size = batch_size or self.batch_size
-        
-        if adapter_path and adapter_path != self.adapter_path:
-            print(f"[INFO] Loading adapter from {adapter_path}")
-            base_model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                device_map="auto" if self.device.type == "cuda" else None,
-                torch_dtype=torch.float16 if self.device.type in ["cuda", "mps"] else torch.float32,
-                cache_dir=self.cache_dir,
-            )
-            self.model = PeftModel.from_pretrained(base_model, adapter_path)
-            if self.device.type == "mps":
-                self.model = self.model.to(self.device)
-        
-        # Create data loader
-        data_collator = DataCollatorForLanguageModeling(
-            tokenizer=self.tokenizer,
-            mlm=False,
-            pad_to_multiple_of=8,
-        )
-        
-        test_loader = DataLoader(
-            test_dataset,
-            batch_size=batch_size,
-            collate_fn=data_collator,
-            shuffle=False,
-            num_workers=0,
-        )
-        
-        # Evaluation
-        self.model.eval()
-        total_loss = 0
-        total_tokens = 0
-        
-        print(f"[INFO] Testing on {len(test_dataset)} samples...")
-        
-        with torch.no_grad():
-            for batch in tqdm(test_loader, desc="Testing"):
-                batch = {k: v.to(self.device) for k, v in batch.items()}
-                outputs = self.model(**batch)
-                
-                shift_logits = outputs.logits[..., :-1, :].contiguous()
-                shift_labels = batch["labels"][..., 1:].contiguous()
-                
-                loss = F.cross_entropy(
-                    shift_logits.view(-1, shift_logits.size(-1)),
-                    shift_labels.view(-1),
-                    ignore_index=-100,
-                    reduction='sum'
-                )
-                
-                total_loss += loss.item()
-                total_tokens += (shift_labels != -100).sum().item()
-        
-        # Calculate metrics
-        avg_loss = total_loss / total_tokens if total_tokens > 0 else float('inf')
-        perplexity = torch.exp(torch.tensor(avg_loss)).item()
-        
-        results = {
-            "test_loss": avg_loss,
-            "test_perplexity": perplexity,
-            "total_samples": len(test_dataset),
-            "total_tokens": total_tokens,
-            "model": self.model_name,
-            "adapter": adapter_path,
-            "device": str(self.device),
-        }
-        
-        print(f"\n{'='*50}")
-        print(f"TEST RESULTS")
-        print(f"{'='*50}")
-        print(f"Loss:       {avg_loss:.4f}")
-        print(f"Perplexity: {perplexity:.2f}")
-        print(f"Samples:    {len(test_dataset)}")
-        print(f"{'='*50}\n")
+    def test_generation(self, adapter_path=None):
+        """Test translation with proper generation"""
         
         if adapter_path:
-            results_path = os.path.join(
-                os.path.dirname(adapter_path),
-                "test_results.json"
+            print(f"[INFO] Loading adapter: {adapter_path}")
+            # Reload base model
+            base_model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                torch_dtype=torch.float32,
+                cache_dir=self.cache_dir,
+                token=params.HF_TOKEN,
+                use_cache=True,  # Enable cache for inference
             )
-            with open(results_path, "w") as f:
-                json.dump(results, f, indent=2)
-            print(f"[INFO] Results saved to {results_path}")
+            # Load LoRA weights
+            self.model = PeftModel.from_pretrained(base_model, adapter_path)
+            self.model = self.model.to(self.device)
+            self.model.eval()  # Set to eval mode
         
-        return results
-    
-    def _print_trainable_parameters(self):
-        """Print the number of trainable parameters"""
-        trainable_params = 0
-        all_param = 0
-        for _, param in self.model.named_parameters():
-            all_param += param.numel()
-            if param.requires_grad:
-                trainable_params += param.numel()
+        test_sentences = [
+            "Hello, how are you?",
+            "Good morning!",
+            "Thank you.",
+        ]
         
-        print(f"\n{'='*50}")
-        print(f"TRAINABLE PARAMETERS")
-        print(f"{'='*50}")
-        print(f"Trainable: {trainable_params:,}")
-        print(f"Total:     {all_param:,}")
-        print(f"Ratio:     {100 * trainable_params / all_param:.2f}%")
-        print(f"{'='*50}\n")
+        print("\n" + "="*60)
+        print("TRANSLATION TESTS")
+        print("="*60)
+        
+        for sentence in test_sentences:
+            prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
+You are a helpful assistant that translates English text to Portuguese. Provide accurate and natural translations.<|eot_id|><|start_header_id|>user<|end_header_id|>
 
-# Main execution
-if __name__ == "__main__":
-    from pt_app.data.opus_dataset import LanguageDS
-    
-    print("="*60)
-    print("PORTUGUESE-ENGLISH TRANSLATION MODEL TRAINING")
-    print("="*60)
-    
-    # Initialize trainer
-    print("\n[STEP 1] Initializing trainer...")
-    trainer = HFTrainer()
-    
-    # Get model and tokenizer
-    print("\n[STEP 2] Loading model and tokenizer...")
-    model, tokenizer = trainer.get_model()
-    optimizer = trainer.get_optimizer()
-    
-    # Load datasets
-    print("\n[STEP 3] Loading and processing datasets...")
-    language_ds = LanguageDS(
-        tokenizer=tokenizer, 
-        dataset='opus_books'  # or 'kaggle'
-    )
-    train_dataset, val_dataset, test_dataset = language_ds.create_datasets(save=True)
-    
-    print(f"\nDataset sizes:")
-    print(f"  Train: {len(train_dataset)}")
-    print(f"  Val:   {len(val_dataset)}")
-    print(f"  Test:  {len(test_dataset)}")
-    
-    # Train the model
-    print("\n[STEP 4] Training model...")
-    adapter_path = trainer.train(train_dataset, val_dataset)
-    
-    # Test the trained model
-    print("\n[STEP 5] Testing model...")
-    if test_dataset:
-        test_results = trainer.test(
-            test_dataset=test_dataset,
-            adapter_path=adapter_path
-        )
-    
-    # Generate sample translation
-    print("\n[STEP 6] Testing translation capability...")
-    test_prompt = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-
-        You are a helpful assistant that translates English text to Portuguese. Provide accurate and natural translations.<|eot_id|><|start_header_id|>user<|end_header_id|>
-
-        Hello, how are you?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+{sentence}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
 """
+            
+            inputs = self.tokenizer(
+                prompt, 
+                return_tensors="pt",
+                truncation=True,
+                max_length=self.max_seq_length,
+            ).to(self.device)
+            
+            # Generate with working settings for MPS
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    input_ids=inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    max_new_tokens=30,
+                    min_new_tokens=2,
+                    temperature=0.3,
+                    do_sample=True,
+                    top_p=0.9,
+                    top_k=50,
+                    repetition_penalty=1.2,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                    use_cache=True,
+                )
+            
+            # Decode only the generated part
+            input_length = inputs["input_ids"].shape[1]
+            generated_ids = outputs[0][input_length:]
+            response = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+            
+            print(f"\nEN: {sentence}")
+            print(f"PT: {response}")
+        
+        print("="*60 + "\n")
+
+
+if __name__ == "__main__":
+    # Your actual dataset loading
+    from pt_app.data.opus_dataset import LanguageDS
     
-    inputs = tokenizer(test_prompt, return_tensors="pt").to(trainer.device)
+    # Initialize trainer
+    trainer = HFTrainerFinal()
     
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=100,
-            temperature=0.7,
-            do_sample=True,
-            top_p=0.9,
-        )
+    # Load model
+    model, tokenizer = trainer.get_model()
     
-    response = tokenizer.decode(outputs[0], skip_special_tokens=False)
-    print(f"\nGenerated translation:\n{response}")
+    # Load datasets
+    print("[INFO] Loading datasets...")
+    train, val, test = LanguageDS(
+        tokenizer=tokenizer,
+        dataset='opus_books'
+    ).create_datasets(save=True)
     
-    print("\n" + "="*60)
-    print("TRAINING COMPLETE")
-    print("="*60)
+    import ipdb; ipdb.set_trace()
+    
+    # Limit for testing if needed
+    if params.DATASET_SAMPLES:
+        train = train.select(range(min(params.DATASET_SAMPLES, len(train))))
+    
+    print(f"[INFO] Training on {len(train)} samples")
+    
+    # Train
+    adapter_path = trainer.train(train, val)
+    
+    # Test generation
+    trainer.test_generation(adapter_path)

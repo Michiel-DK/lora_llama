@@ -4,7 +4,8 @@ import os
 HF_TOKEN = os.getenv('HUGGINGFACE_HUB_TOKEN')
 
 # Model Configuration
-MODEL_NAME = 'meta-llama/Llama-3.2-3B-Instruct'
+#MODEL_NAME = 'meta-llama/Llama-3.2-3B-Instruct'
+MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
 NEW_MODEL_NAME = "new-model"
 USER_NAME = "mlx-community"
 
@@ -15,16 +16,31 @@ CACHE_DIR = "./cache/"
 
 # Data Configuration
 MAX_SEQ_LENGTH = 512
-DATASET_SAMPLES = 200
+DATASET_SAMPLES = 100
+
+# config.py or params.py
+
+if "1B" in MODEL_NAME:
+    BATCH_SIZE = 8  # Can handle more
+    GRADIENT_ACCUMULATION_STEPS = 2
+    LORA_RANK = 32  # Can be higher
+    
+elif "3B" in MODEL_NAME:
+    BATCH_SIZE = 4  # Medium
+    GRADIENT_ACCUMULATION_STEPS = 4
+    LORA_RANK = 16  # Medium
+    
+else:  # 8B+
+    BATCH_SIZE = 1  # Memory constrained
+    GRADIENT_ACCUMULATION_STEPS = 8
+    LORA_RANK = 8  # Conservative
 
 # Training Configuration
-BATCH_SIZE = 4
-EPOCHS = 2
-GRADIENT_ACCUMULATION_STEPS = 4  # Effective batch = 16
+EPOCHS = 1
 
 # LoRA Configuration (HuggingFace PEFT format)
 LORA_CONFIG = {
-    "r": 8,
+    "r": LORA_RANK,
     "lora_alpha": 32,
     "lora_dropout": 0.1,
     "target_modules": [
