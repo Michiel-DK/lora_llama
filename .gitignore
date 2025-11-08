@@ -7,3 +7,5 @@ adapters/
 notebooks/
 *__pycache__*
 logs/*
+cache/*
+outputs/*
