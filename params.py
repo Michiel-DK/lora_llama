@@ -16,7 +16,7 @@ CACHE_DIR = "./cache/"
 
 # Data Configuration
 MAX_SEQ_LENGTH = 512
-DATASET_SAMPLES = 300
+DATASET_SAMPLES = 200
 
 # config.py or params.py
 
@@ -36,7 +36,7 @@ else:  # 8B+
     LORA_RANK = 8  # Conservative
 
 # Training Configuration
-EPOCHS = 3
+EPOCHS = 2
 
 # LoRA Configuration (HuggingFace PEFT format)
 LORA_CONFIG = {

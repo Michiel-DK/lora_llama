@@ -13,7 +13,7 @@ class LanguageDS:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        self.system_prompt = """You are a helpful assistant that translates English text to Portuguese. Provide accurate and natural translations."""
+        #self.system_prompt = """You are a helpful assistant that translates English text to Portuguese. Provide accurate and natural translations."""
 
     def process_sample(self, sample):
             """
@@ -45,10 +45,15 @@ class LanguageDS:
                 return {"input_ids": None, "labels": None}
             
             # Format as conversation
+            # conversation = [
+            #     {"role": "system", "content": self.system_prompt},
+            #     {"role": "user", "content": english_text},
+            #     {"role": "assistant", "content": portuguese_text}
+            # ]
+            
             conversation = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": english_text},
-                {"role": "assistant", "content": portuguese_text}
+            {"role": "user", "content": f"Translate to Portuguese: {english_text}"},
+            {"role": "assistant", "content": portuguese_text}
             ]
             
             # Apply chat template and tokenize - FIRST WITHOUT THE ASSISTANT RESPONSE
