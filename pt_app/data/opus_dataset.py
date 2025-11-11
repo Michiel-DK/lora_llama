@@ -1,4 +1,4 @@
-# language_ds.py - FIXED VERSION
+# language_ds.py - ACTUAL FIX (removes default system prompt)
 from datasets import load_dataset, Dataset
 import os
 import pandas as pd
@@ -13,78 +13,104 @@ class LanguageDS:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        #self.system_prompt = """You are a helpful assistant that translates English text to Portuguese. Provide accurate and natural translations."""
+        # CRITICAL FIX: Override the chat template to remove default system message
+        # This is the ACTUAL solution
+        self._override_chat_template()
+    
+    def _override_chat_template(self):
+        """
+        Override Llama's chat template to remove the default system message
+        that includes dates and knowledge cutoff
+        """
+        # Simplified chat template without the automatic system message
+        custom_template = (
+            "{% for message in messages %}"
+            "{% if message['role'] == 'system' %}"
+            "{{ '<|start_header_id|>system<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>' }}"
+            "{% elif message['role'] == 'user' %}"
+            "{{ '<|start_header_id|>user<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>' }}"
+            "{% elif message['role'] == 'assistant' %}"
+            "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>' }}"
+            "{% endif %}"
+            "{% endfor %}"
+            "{% if add_generation_prompt %}"
+            "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"
+            "{% endif %}"
+        )
+        
+        self.tokenizer.chat_template = custom_template
+        print("[INFO] Custom chat template applied (removed default system message)")
 
     def process_sample(self, sample):
-            """
-            Process a single sample from OPUS or other datasets.
-            Handles multiple dataset formats.
-            """
-            # Extract text based on dataset format
-            if 'translation' in sample:
-                # OPUS format
-                english_text = sample['translation']['en']
-                portuguese_text = sample['translation']['pt']
-            elif 'english' in sample and 'portuguese' in sample:
-                # Kaggle format (lowercase)
-                english_text = sample['english']
-                portuguese_text = sample['portuguese']
-            elif 'En' in sample and 'Pt' in sample:
-                # Raw kaggle format (capitalized)
-                english_text = sample['En']
-                portuguese_text = sample['Pt']
-            elif 'English' in sample and 'Portuguese' in sample:
-                # Kaggle format (Title case)
-                english_text = sample['English']
-                portuguese_text = sample['Portuguese']
-            else:
-                raise ValueError(f"Unknown format. Available keys: {sample.keys()}")
-            
-            # Skip empty translations
-            if not english_text or not portuguese_text:
-                return {"input_ids": None, "labels": None}
-            
-            # Format as conversation
-            # conversation = [
-            #     {"role": "system", "content": self.system_prompt},
-            #     {"role": "user", "content": english_text},
-            #     {"role": "assistant", "content": portuguese_text}
-            # ]
-            
-            conversation = [
+        """
+        Process a single sample from OPUS or other datasets.
+        Handles multiple dataset formats.
+        """
+        # Extract text based on dataset format
+        if 'translation' in sample:
+            english_text = sample['translation']['en']
+            portuguese_text = sample['translation']['pt']
+        elif 'english' in sample and 'portuguese' in sample:
+            english_text = sample['english']
+            portuguese_text = sample['portuguese']
+        elif 'En' in sample and 'Pt' in sample:
+            english_text = sample['En']
+            portuguese_text = sample['Pt']
+        elif 'English' in sample and 'Portuguese' in sample:
+            english_text = sample['English']
+            portuguese_text = sample['Portuguese']
+        else:
+            raise ValueError(f"Unknown format. Available keys: {sample.keys()}")
+        
+        # Skip empty translations
+        if not english_text or not portuguese_text:
+            return {"input_ids": None, "labels": None}
+        
+        # Simple conversation - no system message at all
+        # With the custom template, this won't add any default system content
+        conversation = [
             {"role": "user", "content": f"Translate to Portuguese: {english_text}"},
             {"role": "assistant", "content": portuguese_text}
-            ]
-            
-            # Apply chat template and tokenize - FIRST WITHOUT THE ASSISTANT RESPONSE
-            conversation_without_assistant = conversation[:-1]  # Just system + user
-            
-            prompt_encoding = self.tokenizer.apply_chat_template(
-                conversation_without_assistant,
-                tokenize=True,
-                add_generation_prompt=True,  # Adds the assistant header
-                truncation=True,
-                max_length=MAX_SEQ_LENGTH,
-                return_tensors=None
-            )
-            
-            # NOW WITH THE FULL CONVERSATION
-            full_encoding = self.tokenizer.apply_chat_template(
-                conversation,
-                tokenize=True,
-                truncation=True,
-                max_length=MAX_SEQ_LENGTH,
-                return_tensors=None
-            )
-            
-            # CREATE LABELS: mask everything except the assistant's response
-            prompt_length = len(prompt_encoding)
-            labels = [-100] * prompt_length + full_encoding[prompt_length:]
-            
-            return {
-                "input_ids": full_encoding,
-                "labels": labels
-            }
+        ]
+        
+        # Apply chat template - now without the bloated default system message
+        conversation_without_assistant = conversation[:-1]
+        
+        prompt_encoding = self.tokenizer.apply_chat_template(
+            conversation_without_assistant,
+            tokenize=True,
+            add_generation_prompt=True,
+            truncation=False,
+            max_length=int(MAX_SEQ_LENGTH/2),
+            return_tensors=None
+        )
+        
+            # Check if prompt is too long
+        if len(prompt_encoding) > 200:  # ← Reasonable limit for prompts
+            print(f"Skipping sample with long prompt: {len(prompt_encoding)} tokens")
+            return {"input_ids": None, "labels": None}
+        
+        full_encoding = self.tokenizer.apply_chat_template(
+            conversation,
+            tokenize=True,
+            truncation=False,
+            max_length=MAX_SEQ_LENGTH,
+            return_tensors=None
+        )
+        
+            # Check total length
+        if len(full_encoding) > 512:  # ← Reasonable limit for full conversation
+            print(f"Skipping sample with long total: {len(full_encoding)} tokens")
+            return {"input_ids": None, "labels": None}
+        
+        # CREATE LABELS: mask everything except the assistant's response
+        prompt_length = len(prompt_encoding)
+        labels = [-100] * prompt_length + full_encoding[prompt_length:]
+        
+        return {
+            "input_ids": full_encoding,
+            "labels": labels
+        }
 
     def create_datasets(self, save=False):
         """
@@ -93,53 +119,46 @@ class LanguageDS:
         print(f"Loading dataset: {self.dataset}")
         
         if self.dataset == 'opus_books':
-            # Load OPUS dataset
             raw_dataset = load_dataset("opus_books", "en-pt")['train']
             print(f"Loaded OPUS books en-pt: {len(raw_dataset)} samples")
             
         elif self.dataset == 'opus100':
-            # Alternative: OPUS-100 which is cleaner
             raw_dataset = load_dataset("opus100", "en-pt")['train']
             print(f"Loaded OPUS-100 en-pt: {len(raw_dataset)} samples")
             
         elif self.dataset == 'kaggle':
-                    file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'datasets', 'por.txt')
-                    
-                    # Try to load and inspect the actual format
-                    try:
-                        # First, try reading with automatic column detection
-                        df = pd.read_csv(file, sep="\t", nrows=5)
-                        print(f"Detected columns: {df.columns.tolist()}")
-                        
-                        # Now load the full dataset with the correct columns
-                        df = pd.read_csv(file, sep="\t")
-                        
-                        # Rename columns to standard format if needed
-                        column_mapping = {}
-                        for col in df.columns:
-                            col_lower = col.lower()
-                            if 'eng' in col_lower or col in ['En', 'English', 'english']:
-                                column_mapping[col] = 'English'
-                            elif 'port' in col_lower or 'pt' in col_lower or col in ['Pt', 'Portuguese', 'portuguese']:
-                                column_mapping[col] = 'Portuguese'
-                        
-                        df = df.rename(columns=column_mapping)
-                        df = df[['English', 'Portuguese']].dropna()
-                        
-                    except Exception as e:
-                        print(f"Error loading Kaggle dataset: {e}")
-                        # Fallback to your original approach
-                        df = pd.read_csv(
-                            file, 
-                            sep="\t", 
-                            names=["En", "Pt", "NAN"],
-                            usecols=["En", "Pt"]
-                        )
-                        df = df.rename(columns={"En": "English", "Pt": "Portuguese"})
-                    
-                    raw_dataset = Dataset.from_pandas(df)
-                    print(f"Loaded Kaggle dataset: {len(raw_dataset)} samples")
-                    print(f"Sample row: {raw_dataset[0]}")
+            file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'datasets', 'por.txt')
+            
+            try:
+                df = pd.read_csv(file, sep="\t", nrows=5)
+                print(f"Detected columns: {df.columns.tolist()}")
+                
+                df = pd.read_csv(file, sep="\t")
+                
+                column_mapping = {}
+                for col in df.columns:
+                    col_lower = col.lower()
+                    if 'eng' in col_lower or col in ['En', 'English', 'english']:
+                        column_mapping[col] = 'English'
+                    elif 'port' in col_lower or 'pt' in col_lower or col in ['Pt', 'Portuguese', 'portuguese']:
+                        column_mapping[col] = 'Portuguese'
+                
+                df = df.rename(columns=column_mapping)
+                df = df[['English', 'Portuguese']].dropna()
+                
+            except Exception as e:
+                print(f"Error loading Kaggle dataset: {e}")
+                df = pd.read_csv(
+                    file, 
+                    sep="\t", 
+                    names=["En", "Pt", "NAN"],
+                    usecols=["En", "Pt"]
+                )
+                df = df.rename(columns={"En": "English", "Pt": "Portuguese"})
+            
+            raw_dataset = Dataset.from_pandas(df)
+            print(f"Loaded Kaggle dataset: {len(raw_dataset)} samples")
+            print(f"Sample row: {raw_dataset[0]}")
         else:
             raise ValueError(f"Unknown dataset: {self.dataset}")
         
@@ -153,10 +172,10 @@ class LanguageDS:
             self.process_sample,
             remove_columns=raw_dataset.column_names,
             desc="Processing translations",
-            num_proc=None,  # Single process for MPS compatibility
+            num_proc=None,
         )
         
-        # Filter out None values (empty translations)
+        # Filter out None values
         processed_dataset = processed_dataset.filter(
             lambda x: x['input_ids'] is not None and x['labels'] is not None
         )
@@ -184,15 +203,26 @@ class LanguageDS:
             sample = train_dataset[0]
             sample_text = self.tokenizer.decode(sample['input_ids'])
             print("\n" + "="*50)
-            print("SAMPLE DECODED TEXT (first 500 chars):")
-            print(sample_text[:500])
+            print("SAMPLE DECODED TEXT:")
+            print(sample_text)
             print("="*50)
             
-            # Decode only the non-masked labels to show what the model will predict
+            # Decode only the non-masked labels
             label_tokens = [t for t in sample['labels'] if t != -100]
             label_text = self.tokenizer.decode(label_tokens)
             print("\nLABEL TEXT (what model predicts):")
-            print(label_text[:500])
+            print(label_text)
+            print("="*50 + "\n")
+            
+            # DIAGNOSTIC: Show prompt length breakdown
+            prompt_token_count = sum(1 for label in sample['labels'] if label == -100)
+            label_token_count = sum(1 for label in sample['labels'] if label != -100)
+            
+            print(f"TOKEN BREAKDOWN:")
+            print(f"  Prompt tokens: {prompt_token_count}")
+            print(f"  Label tokens: {label_token_count}")
+            print(f"  Total tokens: {len(sample['input_ids'])}")
+            print(f"  Prompt %: {prompt_token_count / len(sample['input_ids']) * 100:.1f}%")
             print("="*50 + "\n")
         
         if save:
@@ -205,35 +235,23 @@ class LanguageDS:
         
         return train_dataset, valid_dataset, test_dataset
 
-# Test the dataset class
+
 if __name__ == "__main__":
     from transformers import AutoTokenizer
     
-    # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
     
-    # Create dataset
-    ds = LanguageDS(tokenizer, dataset='opus100')  # or 'opus_books'
-    train, val, test = ds.create_datasets(save=True)
+    print("="*80)
+    print("TESTING CUSTOM CHAT TEMPLATE (REMOVES DEFAULT SYSTEM)")
+    print("="*80)
     
-    # Check a few samples
-    print("\nFirst 3 training samples decoded:")
+    ds = LanguageDS(tokenizer, dataset='opus_books')
+    train, val, test = ds.create_datasets(save=False)
+    
+    print("\nFirst 3 samples:")
     for i in range(min(3, len(train))):
         text = tokenizer.decode(train[i]['input_ids'])
-        print(f"\nSample {i+1}:")
-        print(text[:1000] + "...")
-        
-    import ipdb; ipdb.set_trace()
-        
-    # Create dataset
-    ds = LanguageDS(tokenizer, dataset='kaggle')  # or 'opus_books'
-    train, val, test = ds.create_datasets(save=True)
-    
-    # Check a few samples
-    print("\nFirst 3 training samples decoded:")
-    for i in range(min(3, len(train))):
-        text = tokenizer.decode(train[i]['input_ids'])
-        print(f"\nSample {i+1}:")
-        print(text[:1000] + "...")
-
-    import ipdb; ipdb.set_trace()
+        print(f"\n{'='*60}")
+        print(f"Sample {i+1}:")
+        print(f"{'='*60}")
+        print(text)

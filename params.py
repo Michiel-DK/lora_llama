@@ -16,6 +16,9 @@ CACHE_DIR = "./cache/"
 
 # Data Configuration
 MAX_SEQ_LENGTH = 512
+
+MAX_NEW_TOKENS = 150
+
 DATASET_SAMPLES = 200
 
 # config.py or params.py

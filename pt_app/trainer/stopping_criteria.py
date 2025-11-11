@@ -209,11 +209,16 @@ class IncompleteOutputStoppingCriteria(StoppingCriteria):
             recent_tokens = input_ids[0][-10:]
             recent_text = self.tokenizer.decode(recent_tokens, skip_special_tokens=True)
             
-            # Check for incomplete patterns (e.g., ends with article or preposition)
+            # IMPROVED PATTERNS - More specific!
             incomplete_patterns = [
-                r'\b(o|a|os|as|um|uma)\s*$',      # Articles
-                r'\b(de|para|com|em|por)\s*$',    # Prepositions
-                r'\s+$',                           # Just whitespace
+                # Only prepositions followed by space (not part of word)
+                r'\s(de|para|com|em|por|à|ao)\s*$',
+                
+                # Only standalone articles (with space before)
+                r'\s(o|a|os|as|um|uma)\s*$',
+                
+                # Trailing comma
+                r',\s*$',
             ]
             
             for pattern in incomplete_patterns:
@@ -235,7 +240,8 @@ class IncompleteOutputStoppingCriteria(StoppingCriteria):
 def create_stopping_criteria_list(tokenizer, prompt_length: Optional[int] = None,
                                   max_new_tokens: int = 100,
                                   prevent_repetition: bool = True,
-                                  prevent_language_switch: bool = True):
+                                  prevent_language_switch: bool = True,
+                                  check_after_tokens: int = 100) :
     """
     Factory function to create a list of stopping criteria
     
@@ -277,7 +283,7 @@ def create_stopping_criteria_list(tokenizer, prompt_length: Optional[int] = None
     criteria_list.append(
         IncompleteOutputStoppingCriteria(
             tokenizer=tokenizer,
-            check_after_tokens=30
+            check_after_tokens=check_after_tokens
         )
     )
     

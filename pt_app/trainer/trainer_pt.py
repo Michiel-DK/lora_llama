@@ -198,7 +198,7 @@ class UniversalTrainer:
     def generate_translation(
         self, 
         prompt: str, 
-        max_new_tokens: int = 50,
+        max_new_tokens: int = 150,
         temperature: float = 0.8,
         top_p: float = 0.9,
         use_quality_filter: bool = True,
@@ -229,7 +229,8 @@ class UniversalTrainer:
             prompt_length=prompt_length,
             max_new_tokens=max_new_tokens,
             prevent_repetition=True,
-            prevent_language_switch=True
+            prevent_language_switch=True,
+            check_after_tokens=100
         )
         
         # Create generation config with improved parameters
@@ -243,6 +244,12 @@ class UniversalTrainer:
             pad_token_id=self.tokenizer.pad_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
         )
+        
+        print(f"🔍 DEBUG: generation_config.max_new_tokens = {generation_config.max_new_tokens}")
+    
+        # ... before generate ...
+        print(f"🔍 DEBUG: About to generate with input shape {inputs['input_ids'].shape}")
+        
         
         # Generate
         with torch.no_grad():
@@ -454,7 +461,7 @@ class UniversalTrainer:
             # Generate translation with quality filtering
             raw_translation, filtered_translation = self.generate_translation(
                 prompt=prompt,
-                max_new_tokens=100,
+                max_new_tokens=params.MAX_NEW_TOKENS,
                 temperature=0.8,
                 top_p=0.9,
                 use_quality_filter=use_quality_filter,
