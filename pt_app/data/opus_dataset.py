@@ -18,7 +18,7 @@ class LanguageDS:
     def process_sample(self, sample):
             """
             Process a single sample from OPUS or other datasets.
-            Handles the actual OPUS format: {'translation': {'en': '...', 'pt': '...'}}
+            Handles multiple dataset formats.
             """
             # Extract text based on dataset format
             if 'translation' in sample:
@@ -26,19 +26,23 @@ class LanguageDS:
                 english_text = sample['translation']['en']
                 portuguese_text = sample['translation']['pt']
             elif 'english' in sample and 'portuguese' in sample:
-                # Kaggle format
+                # Kaggle format (lowercase)
                 english_text = sample['english']
                 portuguese_text = sample['portuguese']
             elif 'En' in sample and 'Pt' in sample:
-                # Raw kaggle format
+                # Raw kaggle format (capitalized)
                 english_text = sample['En']
                 portuguese_text = sample['Pt']
+            elif 'English' in sample and 'Portuguese' in sample:
+                # Kaggle format (Title case)
+                english_text = sample['English']
+                portuguese_text = sample['Portuguese']
             else:
-                raise ValueError(f"Unknown format: {sample.keys()}")
+                raise ValueError(f"Unknown format. Available keys: {sample.keys()}")
             
             # Skip empty translations
             if not english_text or not portuguese_text:
-                return None
+                return {"input_ids": None, "labels": None}
             
             # Format as conversation
             conversation = [
@@ -94,15 +98,43 @@ class LanguageDS:
             print(f"Loaded OPUS-100 en-pt: {len(raw_dataset)} samples")
             
         elif self.dataset == 'kaggle':
-            file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'datasets', 'por.txt')
-            df = pd.read_csv(
-                file, 
-                sep="\t", 
-                names=["En", "Pt", "NAN"],
-                usecols=["En", "Pt"]
-            )
-            raw_dataset = Dataset.from_pandas(df)
-            print(f"Loaded Kaggle dataset: {len(raw_dataset)} samples")
+                    file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'datasets', 'por.txt')
+                    
+                    # Try to load and inspect the actual format
+                    try:
+                        # First, try reading with automatic column detection
+                        df = pd.read_csv(file, sep="\t", nrows=5)
+                        print(f"Detected columns: {df.columns.tolist()}")
+                        
+                        # Now load the full dataset with the correct columns
+                        df = pd.read_csv(file, sep="\t")
+                        
+                        # Rename columns to standard format if needed
+                        column_mapping = {}
+                        for col in df.columns:
+                            col_lower = col.lower()
+                            if 'eng' in col_lower or col in ['En', 'English', 'english']:
+                                column_mapping[col] = 'English'
+                            elif 'port' in col_lower or 'pt' in col_lower or col in ['Pt', 'Portuguese', 'portuguese']:
+                                column_mapping[col] = 'Portuguese'
+                        
+                        df = df.rename(columns=column_mapping)
+                        df = df[['English', 'Portuguese']].dropna()
+                        
+                    except Exception as e:
+                        print(f"Error loading Kaggle dataset: {e}")
+                        # Fallback to your original approach
+                        df = pd.read_csv(
+                            file, 
+                            sep="\t", 
+                            names=["En", "Pt", "NAN"],
+                            usecols=["En", "Pt"]
+                        )
+                        df = df.rename(columns={"En": "English", "Pt": "Portuguese"})
+                    
+                    raw_dataset = Dataset.from_pandas(df)
+                    print(f"Loaded Kaggle dataset: {len(raw_dataset)} samples")
+                    print(f"Sample row: {raw_dataset[0]}")
         else:
             raise ValueError(f"Unknown dataset: {self.dataset}")
         
@@ -185,3 +217,18 @@ if __name__ == "__main__":
         text = tokenizer.decode(train[i]['input_ids'])
         print(f"\nSample {i+1}:")
         print(text[:1000] + "...")
+        
+    import ipdb; ipdb.set_trace()
+        
+    # Create dataset
+    ds = LanguageDS(tokenizer, dataset='kaggle')  # or 'opus_books'
+    train, val, test = ds.create_datasets(save=True)
+    
+    # Check a few samples
+    print("\nFirst 3 training samples decoded:")
+    for i in range(min(3, len(train))):
+        text = tokenizer.decode(train[i]['input_ids'])
+        print(f"\nSample {i+1}:")
+        print(text[:1000] + "...")
+
+    import ipdb; ipdb.set_trace()
