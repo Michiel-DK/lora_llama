@@ -22,6 +22,8 @@ MAX_NEW_TOKENS = 150
 
 DATASET_SAMPLES = 200
 
+DATASET = 'opus_books'
+
 # config.py or params.py
 
 if "1B" in MODEL_NAME:

@@ -42,6 +42,8 @@ except ImportError:
     print("Warning: sacrebleu not available. Install with: pip install sacrebleu")
     BLEU_AVAILABLE = False
 
+import wandb
+
 
 class UniversalTrainer:
     """Simple trainer that works on both MPS and CUDA with quality filtering"""
@@ -74,6 +76,22 @@ class UniversalTrainer:
         self.quality_filter = None
         
         os.makedirs(self.adapter_path, exist_ok=True)
+        
+        ##wandb initialization
+        wandb.init(
+        project="translation-llama",
+        config={
+            "model": self.model_name,
+            "device": self.device_type,
+            "dataset": params.DATASET,
+            "max_seq_length": self.max_seq_length,
+            "max_new_tokens": params.MAX_NEW_TOKENS,
+            'batch_size': self.batch_size,
+            'epochs': params.EPOCHS,
+            "lora_r": params.LORA_CONFIG["r"],
+            "lora_alpha": params.LORA_CONFIG["lora_alpha"],
+        }
+    )
     
     def get_model(self) -> Tuple[Any, Any]:
         """Load model - works on both MPS and CUDA"""
@@ -182,16 +200,24 @@ class UniversalTrainer:
             avg_loss = np.mean(epoch_losses)
             print(f"Epoch {epoch+1} - Average Loss: {avg_loss:.4f}")
             
+            wandb.log({
+                "epoch": epoch + 1,
+                "train_loss": avg_loss,
+            })
+            
             # Validate if provided
             if val_dataset and epoch == epochs - 1:  # Only validate at end
                 val_loss = self._validate(val_dataset)
                 print(f"Validation Loss: {val_loss:.4f}")
+                wandb.log({"val_loss": val_loss})
         
         # Save model
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         save_path = os.path.join(self.adapter_path, f"{timestamp}_final")
         self.model.save_pretrained(save_path)
         print(f"[INFO] Model saved to {save_path}")
+        
+        wandb.log({'model_saved_path': save_path})
         
         return save_path
     
@@ -659,6 +685,13 @@ if __name__ == "__main__":
         verbose_filter=False  # Set to True to see filtering details
     )
     
+    wandb.log({
+            "test_bleu": results_filtered['metrics'].get('bleu', 0),
+            "test_rouge_l": results_filtered['metrics'].get('rougeL_f1', 0),
+            "test_perplexity": results_filtered['avg_perplexity'],
+            "filter_pass_rate": results_filtered['filter_stats']['pass_rate'] if results_filtered['filter_stats'] else 0,
+        })
+
     # Optionally test without filtering for comparison
     print("\n" + "="*80)
     print("TESTING WITHOUT QUALITY FILTERING (for comparison)")
