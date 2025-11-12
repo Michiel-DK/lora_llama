@@ -42,6 +42,10 @@ except ImportError:
     print("Warning: sacrebleu not available. Install with: pip install sacrebleu")
     BLEU_AVAILABLE = False
 
+import wandb
+import weave
+
+
 
 class UniversalTrainer:
     """Simple trainer that works on both MPS and CUDA with quality filtering"""
@@ -74,6 +78,7 @@ class UniversalTrainer:
         self.quality_filter = None
         
         os.makedirs(self.adapter_path, exist_ok=True)
+        
     
     def get_model(self) -> Tuple[Any, Any]:
         """Load model - works on both MPS and CUDA"""
@@ -182,16 +187,24 @@ class UniversalTrainer:
             avg_loss = np.mean(epoch_losses)
             print(f"Epoch {epoch+1} - Average Loss: {avg_loss:.4f}")
             
+            wandb.log({
+                "epoch": epoch + 1,
+                "train_loss": avg_loss,
+            })
+            
             # Validate if provided
             if val_dataset and epoch == epochs - 1:  # Only validate at end
                 val_loss = self._validate(val_dataset)
                 print(f"Validation Loss: {val_loss:.4f}")
+                wandb.log({"val_loss": val_loss})
         
         # Save model
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         save_path = os.path.join(self.adapter_path, f"{timestamp}_final")
         self.model.save_pretrained(save_path)
         print(f"[INFO] Model saved to {save_path}")
+        
+        wandb.log({'model_saved_path': save_path})
         
         return save_path
     
@@ -279,6 +292,7 @@ class UniversalTrainer:
         
         return raw_translation, filtered_translation
     
+    @weave.op()
     def test_generation(
         self, 
         adapter_path=None, 
@@ -570,16 +584,91 @@ class UniversalTrainer:
         
         print("="*80)
         
-        # Return results for programmatic use
-        return {
+        if wandb.run is not None:  # Check if wandb is initialized
+                wandb.log({
+                    # Main metrics
+                    "test/bleu": metrics.get('bleu', 0),
+                    "test/rouge1_f1": metrics.get('rouge1_f1', 0),
+                    "test/rouge2_f1": metrics.get('rouge2_f1', 0),
+                    "test/rougeL_f1": metrics.get('rougeL_f1', 0),
+                    
+                    # Perplexity
+                    "test/perplexity_mean": np.mean(valid_perplexities) if valid_perplexities else float('inf'),
+                    "test/perplexity_median": np.median(valid_perplexities) if valid_perplexities else float('inf'),
+                    
+                    # Filter stats
+                    "test/filter_pass_rate": filter_stats['pass_rate'] if filter_stats else 1.0,
+                    "test/filter_repetitions": filter_stats['repetitions'] if filter_stats else 0,
+                    "test/filter_language_mixing": filter_stats['language_mixing'] if filter_stats else 0,
+                    "test/filter_incomplete": filter_stats['incomplete'] if filter_stats else 0,
+                    
+                    # Length stats
+                    "test/avg_prediction_length": np.mean([len(p.split()) for p in filtered_predictions]),
+                    "test/avg_reference_length": np.mean([len(r.split()) for r in references]),
+                })
+                
+                # 2️⃣ Log example translations as a WandB Table
+                examples_table = wandb.Table(
+                    columns=[
+                        "ID", 
+                        "Input (truncated)", 
+                        "Raw Output", 
+                        "Filtered Output",
+                        "Reference", 
+                        "Perplexity",
+                        "Passed Filter"
+                    ],
+                    data=[
+                        [
+                            i,
+                            prompts[i][:100] + "..." if len(prompts[i]) > 100 else prompts[i],
+                            raw_predictions[i][:150] + "..." if len(raw_predictions[i]) > 150 else raw_predictions[i],
+                            (filtered_predictions[i][:150] + "..." if filtered_predictions[i] and len(filtered_predictions[i]) > 150 else filtered_predictions[i]) or "FILTERED OUT",
+                            references[i][:150] + "..." if len(references[i]) > 150 else references[i],
+                            f"{perplexities[i]:.2f}" if not math.isinf(perplexities[i]) else "∞",
+                            "✅" if filtered_predictions[i] else "❌"
+                        ]
+                        for i in range(min(20, len(prompts)))  # Log first 20 examples
+                    ]
+                )
+                wandb.log({"test/translation_examples": examples_table})
+                
+                # 3️⃣ Log comparison metrics if using filter
+                if use_quality_filter and raw_metrics:
+                    wandb.log({
+                        "test/raw_bleu": raw_metrics.get('bleu', 0),
+                        "test/filtered_bleu": metrics.get('bleu', 0),
+                        "test/bleu_improvement": metrics.get('bleu', 0) - raw_metrics.get('bleu', 0),
+                        "test/raw_rouge_l": raw_metrics.get('rougeL_f1', 0),
+                        "test/filtered_rouge_l": metrics.get('rougeL_f1', 0),
+                    })
+            
+        results = {
             'raw_predictions': raw_predictions,
             'filtered_predictions': filtered_predictions,
             'references': references,
             'perplexities': perplexities,
             'metrics': metrics,
             'avg_perplexity': np.mean(valid_perplexities) if valid_perplexities else float('inf'),
-            'filter_stats': filter_stats if use_quality_filter else None
+            'filter_stats': filter_stats if use_quality_filter else None,
+            
+            # 4️⃣ Add structured examples for Weave
+            'examples': [
+                {
+                    'id': i,
+                    'input': prompts[i],
+                    'raw_output': raw_predictions[i],
+                    'filtered_output': filtered_predictions[i],
+                    'reference': references[i],
+                    'perplexity': perplexities[i],
+                    'passed_filter': filtered_predictions[i] is not None,
+                }
+                for i in range(len(prompts))
+            ]
         }
+        
+        return results
+        
     
     def _collate_fn(self, batch):
         """Collate function for pre-tokenized data"""
@@ -629,6 +718,26 @@ class UniversalTrainer:
 if __name__ == "__main__":
     from pt_app.data.opus_dataset import LanguageDS
     
+    
+    # Initialize tracking BEFORE creating trainer
+    weave.init(params.PROJECT_NAME)
+
+    wandb.init(
+        project=params.PROJECT_NAME,
+        name=f"{params.MODEL_NAME}-{params.DATASET}-{params.EPOCHS}ep-{datetime.now().strftime('%Y%m%d_%H%M')}",
+        tags=["baseline"],
+        config={
+            "model": params.MODEL_NAME,
+            "dataset": params.DATASET,
+            "max_seq_length": params.MAX_SEQ_LENGTH,
+            "max_new_tokens": params.MAX_NEW_TOKENS,
+            "batch_size": params.BATCH_SIZE,  # Will be set by trainer
+            "epochs": params.EPOCHS,
+            "lora_r": params.LORA_CONFIG["r"],
+            "lora_alpha": params.LORA_CONFIG["lora_alpha"],
+        }
+    )
+    
     # Initialize trainer
     trainer = UniversalTrainer()
     
@@ -639,7 +748,7 @@ if __name__ == "__main__":
     print("[INFO] Loading datasets...")
     train, val, test = LanguageDS(
         tokenizer=tokenizer,
-        dataset='opus_books'
+        dataset=params.DATASET,
     ).create_datasets(save=True)
     
     print(f"[INFO] Dataset sizes - Train: {len(train)}, Val: {len(val) if val else 0}")
@@ -654,30 +763,32 @@ if __name__ == "__main__":
     results_filtered = trainer.test_generation(
         adapter_path=adapter_path,
         test_dataset=test,
-        max_samples=30,
+        max_samples=20,  #SET TO NONE FOR FULL TESTSET
         use_quality_filter=True,
         verbose_filter=False  # Set to True to see filtering details
     )
     
+    wandb.finish()
+    
     # Optionally test without filtering for comparison
-    print("\n" + "="*80)
-    print("TESTING WITHOUT QUALITY FILTERING (for comparison)")
-    print("="*80)
-    results_raw = trainer.test_generation(
-        adapter_path=adapter_path,
-        test_dataset=test,
-        max_samples=30,
-        use_quality_filter=False
-    )
+    # print("\n" + "="*80)
+    # print("TESTING WITHOUT QUALITY FILTERING (for comparison)")
+    # print("="*80)
+    # results_raw = trainer.test_generation(
+    #     adapter_path=adapter_path,
+    #     test_dataset=test,
+    #     max_samples=30,
+    #     use_quality_filter=False
+    # )
     
     # Summary comparison
     print("\n" + "="*80)
     print("FINAL SUMMARY")
     print("="*80)
-    print("\nWithout Quality Filter:")
-    print(f"  BLEU Score: {results_raw['metrics'].get('bleu', 0):.2f}")
-    print(f"  Average Perplexity: {results_raw['avg_perplexity']:.2f}")
-    print(f"  ROUGE-L F1: {results_raw['metrics'].get('rougeL_f1', 0):.4f}")
+    # print("\nWithout Quality Filter:")
+    # print(f"  BLEU Score: {results_raw['metrics'].get('bleu', 0):.2f}")
+    # print(f"  Average Perplexity: {results_raw['avg_perplexity']:.2f}")
+    # print(f"  ROUGE-L F1: {results_raw['metrics'].get('rougeL_f1', 0):.4f}")
     
     print("\nWith Quality Filter:")
     print(f"  BLEU Score: {results_filtered['metrics'].get('bleu', 0):.2f}")
@@ -691,10 +802,10 @@ if __name__ == "__main__":
         print(f"  Language Mixing Fixed: {results_filtered['filter_stats']['language_mixing']}")
     
     # Calculate improvements
-    bleu_improvement = results_filtered['metrics'].get('bleu', 0) - results_raw['metrics'].get('bleu', 0)
-    rouge_improvement = results_filtered['metrics'].get('rougeL_f1', 0) - results_raw['metrics'].get('rougeL_f1', 0)
+    # bleu_improvement = results_filtered['metrics'].get('bleu', 0) - results_raw['metrics'].get('bleu', 0)
+    # rouge_improvement = results_filtered['metrics'].get('rougeL_f1', 0) - results_raw['metrics'].get('rougeL_f1', 0)
     
-    print(f"\nOverall Improvements:")
-    print(f"  BLEU: {bleu_improvement:+.2f} points")
-    print(f"  ROUGE-L: {rouge_improvement:+.4f} points")
-    print("="*80)
+    # print(f"\nOverall Improvements:")
+    # print(f"  BLEU: {bleu_improvement:+.2f} points")
+    # print(f"  ROUGE-L: {rouge_improvement:+.4f} points")
+    # print("="*80)

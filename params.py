@@ -3,10 +3,11 @@ import os
 
 HF_TOKEN = os.getenv('HUGGINGFACE_HUB_TOKEN')
 
+PROJECT_NAME = 'EN_PT_TRANSLATION_LORA'
+
 # Model Configuration
-#MODEL_NAME = 'meta-llama/Llama-3.2-3B-Instruct'
 MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
-MODEL_NAME='Qwen/Qwen2.5-1.5B-Instruct'
+#MODEL_NAME='Qwen/Qwen2.5-1.5B-Instruct'
 NEW_MODEL_NAME = "new-model"
 USER_NAME = "mlx-community"
 
@@ -20,7 +21,9 @@ MAX_SEQ_LENGTH = 512
 
 MAX_NEW_TOKENS = 150
 
-DATASET_SAMPLES = 200
+DATASET_SAMPLES = None
+
+DATASET = 'opus_books' 
 
 # config.py or params.py
 
@@ -40,7 +43,7 @@ else:  # 8B+
     LORA_RANK = 8  # Conservative
 
 # Training Configuration
-EPOCHS = 2
+EPOCHS = 10
 
 # LoRA Configuration (HuggingFace PEFT format)
 LORA_CONFIG = {

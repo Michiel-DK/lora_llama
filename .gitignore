@@ -9,3 +9,4 @@ notebooks/
 logs/*
 cache/*
 outputs/*
+wandb/*
