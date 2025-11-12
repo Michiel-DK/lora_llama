@@ -6,6 +6,7 @@ HF_TOKEN = os.getenv('HUGGINGFACE_HUB_TOKEN')
 # Model Configuration
 #MODEL_NAME = 'meta-llama/Llama-3.2-3B-Instruct'
 MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
+MODEL_NAME='Qwen/Qwen2.5-1.5B-Instruct'
 NEW_MODEL_NAME = "new-model"
 USER_NAME = "mlx-community"
 
@@ -16,7 +17,10 @@ CACHE_DIR = "./cache/"
 
 # Data Configuration
 MAX_SEQ_LENGTH = 512
-DATASET_SAMPLES = 300
+
+MAX_NEW_TOKENS = 150
+
+DATASET_SAMPLES = 200
 
 # config.py or params.py
 
@@ -36,7 +40,7 @@ else:  # 8B+
     LORA_RANK = 8  # Conservative
 
 # Training Configuration
-EPOCHS = 3
+EPOCHS = 2
 
 # LoRA Configuration (HuggingFace PEFT format)
 LORA_CONFIG = {

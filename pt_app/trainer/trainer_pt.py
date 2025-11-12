@@ -3,7 +3,7 @@ import os
 import torch
 import json
 from datetime import datetime
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from tqdm import tqdm
 import numpy as np
 from torch.utils.data import DataLoader
@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    GenerationConfig,
 )
 from peft import (
     LoraConfig, 
@@ -22,6 +23,10 @@ import params
 
 from collections import defaultdict
 import math
+
+# Import the custom modules
+from pt_app.trainer.quality_filter import TranslationQualityFilter
+from pt_app.trainer.stopping_criteria import create_stopping_criteria_list
 
 try:
     from rouge_score import rouge_scorer
@@ -37,8 +42,9 @@ except ImportError:
     print("Warning: sacrebleu not available. Install with: pip install sacrebleu")
     BLEU_AVAILABLE = False
 
+
 class UniversalTrainer:
-    """Simple trainer that works on both MPS and CUDA"""
+    """Simple trainer that works on both MPS and CUDA with quality filtering"""
     
     def __init__(self):
         # Load configs from params
@@ -65,6 +71,7 @@ class UniversalTrainer:
         
         self.model = None
         self.tokenizer = None
+        self.quality_filter = None
         
         os.makedirs(self.adapter_path, exist_ok=True)
     
@@ -96,6 +103,13 @@ class UniversalTrainer:
         # Set padding token
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        
+        # Initialize quality filter
+        self.quality_filter = TranslationQualityFilter(
+            tokenizer=self.tokenizer,
+            target_language='pt'
+        )
+        print("[INFO] Quality filter initialized")
         
         # Apply LoRA
         lora_config = LoraConfig(
@@ -181,8 +195,113 @@ class UniversalTrainer:
         
         return save_path
     
-    def test_generation(self, adapter_path=None, test_dataset=None, max_samples=None):
-        """Enhanced test translation with comprehensive metrics"""
+    def generate_translation(
+        self, 
+        prompt: str, 
+        max_new_tokens: int = 150,
+        temperature: float = 0.8,
+        top_p: float = 0.9,
+        use_quality_filter: bool = True,
+        verbose: bool = False
+    ) -> Tuple[str, Optional[str]]:
+        """
+        Generate translation with quality filtering and stopping criteria
+        
+        Args:
+            prompt: Input prompt
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            top_p: Nucleus sampling parameter
+            use_quality_filter: Whether to apply quality filtering
+            verbose: Print filtering details
+            
+        Returns:
+            Tuple of (raw_translation, filtered_translation)
+        """
+        # Tokenize input
+        inputs = self.tokenizer(prompt, return_tensors="pt", max_length=512, truncation=True)
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        prompt_length = inputs['input_ids'].shape[1]
+        
+        # Create stopping criteria
+        stopping_criteria = create_stopping_criteria_list(
+            tokenizer=self.tokenizer,
+            prompt_length=prompt_length,
+            max_new_tokens=max_new_tokens,
+            prevent_repetition=True,
+            prevent_language_switch=True,
+            check_after_tokens=100
+        )
+        
+        # Create generation config with improved parameters
+        generation_config = GenerationConfig(
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=True,
+            no_repeat_ngram_size=3,        # Prevent 3-word repetitions
+            repetition_penalty=1.2,         # Penalize repeated tokens
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+        )
+        
+        print(f"🔍 DEBUG: generation_config.max_new_tokens = {generation_config.max_new_tokens}")
+    
+        # ... before generate ...
+        print(f"🔍 DEBUG: About to generate with input shape {inputs['input_ids'].shape}")
+        
+        
+        # Generate
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                generation_config=generation_config,
+                stopping_criteria=stopping_criteria,
+                use_cache=(self.device_type == "cuda"),
+            )
+        
+        # Decode raw output
+        raw_translation = self.tokenizer.decode(
+            outputs[0][prompt_length:], 
+            skip_special_tokens=True
+        ).strip()
+        
+        # Apply quality filter if requested
+        filtered_translation = None
+        if use_quality_filter and self.quality_filter:
+            # Extract source text from prompt (simple heuristic)
+            source_text = prompt.split('user<|end_header_id|>')[-1].split('<|eot_id|>')[0].strip()
+            filtered_translation = self.quality_filter.filter_translation(
+                source=source_text,
+                translation=raw_translation,
+                verbose=verbose
+            )
+        
+        return raw_translation, filtered_translation
+    
+    def test_generation(
+        self, 
+        adapter_path=None, 
+        test_dataset=None, 
+        max_samples=None,
+        use_quality_filter=True,
+        verbose_filter=False
+    ):
+        """
+        Enhanced test translation with comprehensive metrics and quality filtering
+        
+        Args:
+            adapter_path: Path to adapter weights
+            test_dataset: Test dataset
+            max_samples: Maximum samples to test
+            use_quality_filter: Whether to apply quality filtering
+            verbose_filter: Print filtering details for each sample
+        """
+        
+        self.device = torch.device("cpu")
+        self.device_type = "cpu"
+        print("[INFO] Using CPU for inference to avoid MPS memory limits")
+        
         
         # Initialize scorers
         rouge_scorer_obj = None
@@ -199,6 +318,13 @@ class UniversalTrainer:
             )
             self.model = PeftModel.from_pretrained(base_model, adapter_path)
             self.model = self.model.to(self.device)
+            
+            # Reinitialize quality filter if not present
+            if self.quality_filter is None:
+                self.quality_filter = TranslationQualityFilter(
+                    tokenizer=self.tokenizer,
+                    target_language='pt'
+                )
         
         self.model.eval()
         
@@ -302,51 +428,62 @@ class UniversalTrainer:
             # Fallback to simple test sentences
             test_sentences = ["Hello!", "Thank you.", "Good morning."]
             prompts = []
-            references = ["Olá!", "Obrigado.", "Bom dia."]  # Expected Portuguese translations
+            references = ["Olá!", "Obrigado.", "Bom dia."]
             
             for sentence in test_sentences:
                 prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-    You are a helpful assistant that translates English text to Portuguese. Provide accurate and natural translations. <|eot_id|><|start_header_id|>user<|end_header_id|>
+                        You are a helpful assistant that translates English text to Portuguese. Provide accurate and natural translations.<|eot_id|><|start_header_id|>user<|end_header_id|>
 
-    {sentence}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+                        {sentence}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
-    """
+                        """
                 prompts.append(prompt)
         
         print("\n" + "="*80)
         print("COMPREHENSIVE TRANSLATION EVALUATION")
+        if use_quality_filter:
+            print("(WITH QUALITY FILTERING)")
         print("="*80)
         
         # Generate predictions and calculate metrics
-        predictions = []
+        raw_predictions = []
+        filtered_predictions = []
         perplexities = []
+        filtering_data = []
         
         for i, (prompt, reference) in enumerate(zip(prompts, references)):
-            # Generate translation
-            inputs = self.tokenizer(prompt, return_tensors="pt", max_length=256, truncation=True)
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            if verbose_filter:
+                print(f"\n{'='*60}")
+                print(f"Processing sample {i+1}/{len(prompts)}")
+                print(f"{'='*60}")
             
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=50,
-                    temperature=0.3,
-                    do_sample=True,
-                    use_cache=(self.device_type == "cuda"),
-                    pad_token_id=self.tokenizer.pad_token_id,
-                )
+            # Generate translation with quality filtering
+            raw_translation, filtered_translation = self.generate_translation(
+                prompt=prompt,
+                max_new_tokens=params.MAX_NEW_TOKENS,
+                temperature=0.8,
+                top_p=0.9,
+                use_quality_filter=use_quality_filter,
+                verbose=verbose_filter
+            )
             
-            response = self.tokenizer.decode(
-                outputs[0][inputs['input_ids'].shape[1]:], 
-                skip_special_tokens=True
-            ).strip()
+            raw_predictions.append(raw_translation)
             
-            predictions.append(response)
+            # Use filtered version if available, otherwise use raw
+            final_prediction = filtered_translation if filtered_translation else raw_translation
+            filtered_predictions.append(final_prediction)
             
-            # Calculate perplexity
+            # Track filtering stats
+            filtering_data.append((
+                prompt.split('user<|end_header_id|>')[-1].split('<|eot_id|>')[0].strip(),
+                raw_translation,
+                filtered_translation
+            ))
+            
+            # Calculate perplexity on the final prediction
             try:
-                perplexity = calculate_perplexity(prompt, reference)
+                perplexity = calculate_perplexity(prompt, final_prediction)
                 perplexities.append(perplexity)
             except Exception as e:
                 perplexities.append(float('inf'))
@@ -355,26 +492,45 @@ class UniversalTrainer:
             if i < 5:
                 print(f"\nExample {i+1}:")
                 if test_dataset is None:
-                    # Extract English text from prompt
                     english_text = prompt.split('user<|end_header_id|>\n\n')[1].split('<|eot_id|>')[0].strip()
                     print(f"  EN: {english_text}")
                 else:
                     print(f"  Input: {prompt[:100]}...")
-                print(f"  Predicted: {response}")
-                print(f"  Expected:  {reference}")
+                
+                print(f"  Raw Output: {raw_translation}")
+                if use_quality_filter and filtered_translation != raw_translation:
+                    print(f"  Filtered: {filtered_translation}")
+                    print(f"  [FILTERED]" if filtered_translation is None else "  [CLEANED]")
+                print(f"  Expected: {reference}")
                 print(f"  Perplexity: {perplexities[-1]:.2f}")
             
             # Clear memory on MPS
             if self.device_type == "mps" and i % 10 == 0:
                 self._clear_memory()
         
+        # Get filtering statistics
+        if use_quality_filter and self.quality_filter:
+            filter_stats = self.quality_filter.get_statistics(filtering_data)
+            print(f"\n{'='*50}")
+            print("QUALITY FILTER STATISTICS")
+            print("="*50)
+            print(f"Total samples: {filter_stats['total']}")
+            print(f"Passed filter: {filter_stats['total'] - filter_stats['filtered_out']}")
+            print(f"Filtered out: {filter_stats['filtered_out']}")
+            print(f"Pass rate: {filter_stats['pass_rate']*100:.1f}%")
+            print(f"\nFilter reasons:")
+            print(f"  Language mixing: {filter_stats['language_mixing']}")
+            print(f"  Repetitions cleaned: {filter_stats['repetitions']}")
+            print(f"  Length issues: {filter_stats['length_issues']}")
+            print(f"  Incomplete: {filter_stats['incomplete']}")
+        
         # Calculate and display metrics
         print(f"\n{'='*50}")
         print("EVALUATION METRICS")
         print("="*50)
         
-        print(f"Total samples: {len(predictions)}")
-        print(f"Avg prediction length: {np.mean([len(p.split()) for p in predictions]):.2f} words")
+        print(f"Total samples: {len(filtered_predictions)}")
+        print(f"Avg prediction length: {np.mean([len(p.split()) for p in filtered_predictions]):.2f} words")
         print(f"Avg reference length: {np.mean([len(r.split()) for r in references]):.2f} words")
         
         # Perplexity
@@ -385,8 +541,8 @@ class UniversalTrainer:
             print(f"  Median: {np.median(valid_perplexities):.2f}")
             print(f"  Range: {np.min(valid_perplexities):.2f} - {np.max(valid_perplexities):.2f}")
         
-        # ROUGE and BLEU
-        metrics = calculate_metrics(predictions, references)
+        # ROUGE and BLEU (on filtered predictions)
+        metrics = calculate_metrics(filtered_predictions, references)
         if metrics:
             print(f"\nROUGE Scores:")
             for key, value in metrics.items():
@@ -398,15 +554,31 @@ class UniversalTrainer:
                 if 'bleu_precisions' in metrics:
                     print(f"  Precisions: {[f'{p:.2f}' for p in metrics['bleu_precisions']]}")
         
+        # Compare raw vs filtered metrics if filtering was used
+        if use_quality_filter:
+            raw_metrics = calculate_metrics(raw_predictions, references)
+            if raw_metrics and metrics:
+                print(f"\n{'='*50}")
+                print("RAW vs FILTERED COMPARISON")
+                print("="*50)
+                if 'bleu' in raw_metrics and 'bleu' in metrics:
+                    improvement = metrics['bleu'] - raw_metrics['bleu']
+                    print(f"BLEU: {raw_metrics['bleu']:.2f} → {metrics['bleu']:.2f} ({improvement:+.2f})")
+                if 'rougeL_f1' in raw_metrics and 'rougeL_f1' in metrics:
+                    improvement = metrics['rougeL_f1'] - raw_metrics['rougeL_f1']
+                    print(f"ROUGE-L: {raw_metrics['rougeL_f1']:.4f} → {metrics['rougeL_f1']:.4f} ({improvement:+.4f})")
+        
         print("="*80)
         
         # Return results for programmatic use
         return {
-            'predictions': predictions,
+            'raw_predictions': raw_predictions,
+            'filtered_predictions': filtered_predictions,
             'references': references,
             'perplexities': perplexities,
             'metrics': metrics,
-            'avg_perplexity': np.mean(valid_perplexities) if valid_perplexities else float('inf')
+            'avg_perplexity': np.mean(valid_perplexities) if valid_perplexities else float('inf'),
+            'filter_stats': filter_stats if use_quality_filter else None
         }
     
     def _collate_fn(self, batch):
@@ -470,22 +642,59 @@ if __name__ == "__main__":
         dataset='opus_books'
     ).create_datasets(save=True)
     
-    
-    import ipdb; ipdb.set_trace()
-    
     print(f"[INFO] Dataset sizes - Train: {len(train)}, Val: {len(val) if val else 0}")
     
     # Train
     adapter_path = trainer.train(train, val)
     
-    # Test with your actual dataset (recommended)
-    results = trainer.test_generation(
+    # Test with quality filtering enabled (RECOMMENDED)
+    print("\n" + "="*80)
+    print("TESTING WITH QUALITY FILTERING ENABLED")
+    print("="*80)
+    results_filtered = trainer.test_generation(
         adapter_path=adapter_path,
-        test_dataset=test,  # Your test variable
-        max_samples=100     # Optional: limit for faster testing
+        test_dataset=test,
+        max_samples=30,
+        use_quality_filter=True,
+        verbose_filter=False  # Set to True to see filtering details
     )
-
-    # Access results
-    print(f"BLEU Score: {results['metrics']['bleu']:.2f}")
-    print(f"Average Perplexity: {results['avg_perplexity']:.2f}")
-    print(f"ROUGE-L F1: {results['metrics']['rougeL_f1']:.4f}")
+    
+    # Optionally test without filtering for comparison
+    print("\n" + "="*80)
+    print("TESTING WITHOUT QUALITY FILTERING (for comparison)")
+    print("="*80)
+    results_raw = trainer.test_generation(
+        adapter_path=adapter_path,
+        test_dataset=test,
+        max_samples=30,
+        use_quality_filter=False
+    )
+    
+    # Summary comparison
+    print("\n" + "="*80)
+    print("FINAL SUMMARY")
+    print("="*80)
+    print("\nWithout Quality Filter:")
+    print(f"  BLEU Score: {results_raw['metrics'].get('bleu', 0):.2f}")
+    print(f"  Average Perplexity: {results_raw['avg_perplexity']:.2f}")
+    print(f"  ROUGE-L F1: {results_raw['metrics'].get('rougeL_f1', 0):.4f}")
+    
+    print("\nWith Quality Filter:")
+    print(f"  BLEU Score: {results_filtered['metrics'].get('bleu', 0):.2f}")
+    print(f"  Average Perplexity: {results_filtered['avg_perplexity']:.2f}")
+    print(f"  ROUGE-L F1: {results_filtered['metrics'].get('rougeL_f1', 0):.4f}")
+    
+    if results_filtered['filter_stats']:
+        print(f"\nQuality Filter Impact:")
+        print(f"  Pass Rate: {results_filtered['filter_stats']['pass_rate']*100:.1f}%")
+        print(f"  Repetitions Cleaned: {results_filtered['filter_stats']['repetitions']}")
+        print(f"  Language Mixing Fixed: {results_filtered['filter_stats']['language_mixing']}")
+    
+    # Calculate improvements
+    bleu_improvement = results_filtered['metrics'].get('bleu', 0) - results_raw['metrics'].get('bleu', 0)
+    rouge_improvement = results_filtered['metrics'].get('rougeL_f1', 0) - results_raw['metrics'].get('rougeL_f1', 0)
+    
+    print(f"\nOverall Improvements:")
+    print(f"  BLEU: {bleu_improvement:+.2f} points")
+    print(f"  ROUGE-L: {rouge_improvement:+.4f} points")
+    print("="*80)
