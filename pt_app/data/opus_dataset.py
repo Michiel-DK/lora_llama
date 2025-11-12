@@ -255,3 +255,20 @@ if __name__ == "__main__":
         print(f"Sample {i+1}:")
         print(f"{'='*60}")
         print(text)
+        
+        
+    import ipdb; ipdb.set_trace()
+        
+        
+    ds = LanguageDS(tokenizer, dataset='kaggle')
+    train, val, test = ds.create_datasets(save=False)
+    
+    print("\nFirst 3 samples:")
+    for i in range(min(3, len(train))):
+        text = tokenizer.decode(train[i]['input_ids'])
+        print(f"\n{'='*60}")
+        print(f"Sample {i+1}:")
+        print(f"{'='*60}")
+        print(text)
+        
+    import ipdb; ipdb.set_trace()

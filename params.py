@@ -6,6 +6,7 @@ HF_TOKEN = os.getenv('HUGGINGFACE_HUB_TOKEN')
 # Model Configuration
 #MODEL_NAME = 'meta-llama/Llama-3.2-3B-Instruct'
 MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
+MODEL_NAME='Qwen/Qwen2.5-1.5B-Instruct'
 NEW_MODEL_NAME = "new-model"
 USER_NAME = "mlx-community"
 
