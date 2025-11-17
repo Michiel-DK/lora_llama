@@ -2,6 +2,7 @@
 import os
 
 HF_TOKEN = os.getenv('HUGGINGFACE_HUB_TOKEN')
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 
 PROJECT_NAME = 'EN_PT_TRANSLATION_LORA'
 
@@ -98,3 +99,8 @@ QUANTIZATION_CONFIG = {
     "bnb_4bit_quant_type": "nf4",
     "bnb_4bit_use_double_quant": True,
 }
+
+
+#### JUDGE DATA FORMATTING AND SPLITTING ####
+
+JUDGE_DATA_FILE = os.path.join(os.path.dirname(__file__),'datasets', 'judge_eval', 'judge_training_data.json')

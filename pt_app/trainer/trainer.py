@@ -100,7 +100,7 @@ class LloraTrainer():
         return new_adapter_path
         
 if __name__ == '__main__':
-    from pt_app.data.opus_dataset import LanguageDS
+    from pt_app.data.dataset import LanguageDS
     
     lora = LloraTrainer()
     

@@ -786,7 +786,7 @@ class UniversalTrainer:
 
 
 if __name__ == "__main__":
-    from pt_app.data.opus_dataset import LanguageDS
+    from pt_app.data.dataset import LanguageDS
     
     
     # Initialize tracking BEFORE creating trainer
