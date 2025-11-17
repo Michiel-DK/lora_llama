@@ -20,8 +20,9 @@ CACHE_DIR = "./cache/"
 MAX_SEQ_LENGTH = 512
 
 MAX_NEW_TOKENS = 150
+MIN_WORDS = 5
 
-DATASET_SAMPLES = None
+DATASET_SAMPLES = 500
 
 DATASET = 'opus_books' 
 
@@ -43,7 +44,7 @@ else:  # 8B+
     LORA_RANK = 8  # Conservative
 
 # Training Configuration
-EPOCHS = 10
+EPOCHS = 5
 
 # LoRA Configuration (HuggingFace PEFT format)
 LORA_CONFIG = {

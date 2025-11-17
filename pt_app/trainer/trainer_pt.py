@@ -192,12 +192,17 @@ class UniversalTrainer:
                 "train_loss": avg_loss,
             })
             
-            # Validate if provided
-            if val_dataset and epoch == epochs - 1:  # Only validate at end
+            if val_dataset:
                 val_loss = self._validate(val_dataset)
                 print(f"Validation Loss: {val_loss:.4f}")
-                wandb.log({"val_loss": val_loss})
-        
+                wandb.log({"val_loss": val_loss, "epoch": epoch + 1})
+                
+                should_stop, best_path = self._check_early_stopping(val_loss, epoch)
+                
+                if should_stop:
+                    print(f"Returning best model: {best_path}")
+                    return best_path
+                    
         # Save model
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         save_path = os.path.join(self.adapter_path, f"{timestamp}_final")
@@ -208,6 +213,42 @@ class UniversalTrainer:
         
         return save_path
     
+    def _check_early_stopping(self, current_val_loss, epoch):
+        """
+        Check if early stopping should be triggered.
+        Returns: (should_stop, best_model_path)
+        """
+        if not hasattr(self, 'best_val_loss'):
+            self.best_val_loss = float('inf')
+            self.patience_counter = 0
+            self.best_adapter_path = None
+        
+        patience = 3
+        min_delta = 0.01
+        
+        if current_val_loss < (self.best_val_loss - min_delta):
+            # Improvement
+            self.best_val_loss = current_val_loss
+            self.patience_counter = 0
+            
+            # Save best model
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.best_adapter_path = f"./adapters/{timestamp}_best_ep{epoch+1}"
+            self.model.save_pretrained(self.best_adapter_path)
+            
+            print(f"✅ New best model! Val loss: {current_val_loss:.4f}")
+            return False, self.best_adapter_path
+        else:
+            # No improvement
+            self.patience_counter += 1
+            print(f"⚠️  Patience: {self.patience_counter}/{patience}")
+            
+            if self.patience_counter >= patience:
+                print("🛑 Early stopping triggered!")
+                return True, self.best_adapter_path
+            
+            return False, None
+        
     def generate_translation(
         self, 
         prompt: str, 
@@ -342,12 +383,14 @@ class UniversalTrainer:
         
         self.model.eval()
         
+        
+        
         def extract_text_from_test_item(test_item):
             """Extract input and expected output from test dataset item"""
             input_ids = test_item['input_ids']
             labels = test_item['labels']
             
-            # Find where labels start (not -100)
+            # Find where labels start
             label_start_idx = None
             for i, label in enumerate(labels):
                 if label != -100:
@@ -357,14 +400,37 @@ class UniversalTrainer:
             if label_start_idx is None:
                 return None, None
             
-            # Extract input portion
+            # Extract portions
             input_portion = input_ids[:label_start_idx]
-            # Extract expected output
             expected_labels = [label for label in labels if label != -100]
             
-            # Decode texts
+            # Decode
             input_text = self.tokenizer.decode(input_portion, skip_special_tokens=True)
             expected_output = self.tokenizer.decode(expected_labels, skip_special_tokens=True)
+            
+            # ============================================================
+            # CLEAN UP DECODED TEXT
+            # ============================================================
+            # Remove role markers that slip through
+            input_text = input_text.replace('user', '').strip()
+            input_text = input_text.replace('assistant', '').strip()
+            
+            # Remove ellipsis artifacts
+            input_text = input_text.replace('...', '').strip()
+            
+            # Remove any newlines
+            input_text = input_text.replace('\n\n', ' ').replace('\n', ' ').strip()
+            
+            # Extract just the English text after instruction
+            if 'Translate to Portuguese:' in input_text:
+                parts = input_text.split('Translate to Portuguese:')
+                if len(parts) > 1:
+                    input_text = parts[1].strip()
+            
+            # Clean expected output too
+            expected_output = expected_output.replace('assistant', '').strip()
+            expected_output = expected_output.replace('...', '').strip()
+            # ============================================================
             
             return input_text, expected_output
         
@@ -425,7 +491,11 @@ class UniversalTrainer:
             print(f"Processing {len(test_subset)} test samples...")
             
             for i, test_item in enumerate(test_subset):
-                input_text, expected_output = extract_text_from_test_item(test_item)
+                if 'source_text' in test_item:
+                    input_text = test_item['source_text']
+                    expected_output = test_item['target_text']
+                else:
+                    input_text, expected_output = extract_text_from_test_item(test_item)
                 
                 if input_text is None or expected_output is None:
                     continue
@@ -746,13 +816,45 @@ if __name__ == "__main__":
     
     # Load datasets (already tokenized)
     print("[INFO] Loading datasets...")
-    train, val, test = LanguageDS(
+    train, val, opus_test = LanguageDS(
         tokenizer=tokenizer,
         dataset=params.DATASET,
     ).create_datasets(save=True)
     
-    print(f"[INFO] Dataset sizes - Train: {len(train)}, Val: {len(val) if val else 0}")
-    
+    print("\n" + "="*80)
+    print("VERIFYING TRAINING DATA QUALITY")
+    print("="*80)
+
+    # Check 10 random samples
+    import random
+    sample_indices = random.sample(range(len(train)), min(10, len(train)))
+
+    for idx in sample_indices:
+        sample = train[idx]
+        full = tokenizer.decode(sample['input_ids'], skip_special_tokens=False)
+        
+        # Count role markers
+        user_count = full.count('<|start_header_id|>user<|end_header_id|>')
+        assistant_count = full.count('<|start_header_id|>assistant<|end_header_id|>')
+        
+        # Should be exactly 1 of each
+        if user_count != 1 or assistant_count != 1:
+            print(f"\n⚠️  Sample {idx} has incorrect format!")
+            print(f"   User tags: {user_count}, Assistant tags: {assistant_count}")
+            print(f"   Text: {full[:200]}")
+        
+        # Check labels don't include prompt
+        labels = [t for t in sample['labels'] if t != -100]
+        label_text = tokenizer.decode(labels, skip_special_tokens=True)
+        
+        if 'Translate to Portuguese' in label_text:
+            print(f"\n⚠️  Sample {idx} has prompt in labels!")
+            print(f"   Label text: {label_text[:100]}")
+
+    print("Verification complete!")
+    print("="*80 + "\n")
+
+    print(f"[INFO] Dataset sizes - Train: {len(train)}, Val: {len(val) if val else 0}, OPUS Test: {len(opus_test) if opus_test else 0}")
     # Train
     adapter_path = trainer.train(train, val)
     
@@ -760,13 +862,39 @@ if __name__ == "__main__":
     print("\n" + "="*80)
     print("TESTING WITH QUALITY FILTERING ENABLED")
     print("="*80)
-    results_filtered = trainer.test_generation(
+    opus_results = trainer.test_generation(
         adapter_path=adapter_path,
-        test_dataset=test,
+        test_dataset=opus_test,
         max_samples=20,  #SET TO NONE FOR FULL TESTSET
         use_quality_filter=True,
         verbose_filter=False  # Set to True to see filtering details
     )
+    
+    # Evaluate on FLORES
+    # flores_loader = LanguageDS(tokenizer=tokenizer, dataset="flores")
+    # _, flores_val, flores_test = flores_loader.create_datasets(save=True)
+
+    # flores_results = trainer.test_generation(
+    #     adapter_path=adapter_path,
+    #     test_dataset=flores_test,  #SET TO NONE FOR FULL TESTSET
+    #     max_samples=20,  #SET TO NONE FOR FULL TESTSET
+    #     use_quality_filter=True,
+    #     verbose_filter=False  # Set to True to see filtering details
+    # )
+    
+    # # Log to WandB
+    # wandb.log({
+    #     "opus_bleu": opus_results['metrics']['bleu'],
+    #     "flores_bleu": flores_results['metrics']['bleu'],
+    #     "domain_transfer": flores_results['metrics']['bleu'] / opus_results['metrics']['bleu']
+    # })
+    
+    # print(f"\n{'='*80}")
+    # print(f"OPUS BLEU:   {opus_results['metrics']['bleu']:.2f}")
+    # print(f"FLORES BLEU: {flores_results['metrics']['bleu']:.2f}")
+    # print(f"Transfer:    {flores_results['metrics']['bleu'] / opus_results['metrics']['bleu'] * 100:.1f}%")
+    # print(f"{'='*80}")
+    
     
     wandb.finish()
     
@@ -791,15 +919,15 @@ if __name__ == "__main__":
     # print(f"  ROUGE-L F1: {results_raw['metrics'].get('rougeL_f1', 0):.4f}")
     
     print("\nWith Quality Filter:")
-    print(f"  BLEU Score: {results_filtered['metrics'].get('bleu', 0):.2f}")
-    print(f"  Average Perplexity: {results_filtered['avg_perplexity']:.2f}")
-    print(f"  ROUGE-L F1: {results_filtered['metrics'].get('rougeL_f1', 0):.4f}")
+    print(f"  BLEU Score: {opus_results['metrics'].get('bleu', 0):.2f}")
+    print(f"  Average Perplexity: {opus_results['avg_perplexity']:.2f}")
+    print(f"  ROUGE-L F1: {opus_results['metrics'].get('rougeL_f1', 0):.4f}")
     
-    if results_filtered['filter_stats']:
+    if opus_results['filter_stats']:
         print(f"\nQuality Filter Impact:")
-        print(f"  Pass Rate: {results_filtered['filter_stats']['pass_rate']*100:.1f}%")
-        print(f"  Repetitions Cleaned: {results_filtered['filter_stats']['repetitions']}")
-        print(f"  Language Mixing Fixed: {results_filtered['filter_stats']['language_mixing']}")
+        print(f"  Pass Rate: {opus_results['filter_stats']['pass_rate']*100:.1f}%")
+        print(f"  Repetitions Cleaned: {opus_results['filter_stats']['repetitions']}")
+        print(f"  Language Mixing Fixed: {opus_results['filter_stats']['language_mixing']}")
     
     # Calculate improvements
     # bleu_improvement = results_filtered['metrics'].get('bleu', 0) - results_raw['metrics'].get('bleu', 0)

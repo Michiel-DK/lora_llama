@@ -3,6 +3,7 @@ from datasets import load_dataset, Dataset
 import os
 import pandas as pd
 from params import *
+from tqdm import tqdm
 
 
 class LanguageDS:
@@ -66,16 +67,20 @@ class LanguageDS:
         if not english_text or not portuguese_text:
             return {"input_ids": None, "labels": None}
         
-        # Simple conversation - no system message at all
-        # With the custom template, this won't add any default system content
+        # Skip very short texts
+        MIN_WORDS = 5
+        if (len(english_text.split()) < MIN_WORDS or 
+            len(portuguese_text.split()) < MIN_WORDS):
+            return {"input_ids": None, "labels": None}
+        
+        # Create conversation
         conversation = [
             {"role": "user", "content": f"Translate to Portuguese: {english_text}"},
             {"role": "assistant", "content": portuguese_text}
         ]
         
-        # Apply chat template - now without the bloated default system message
+        # Tokenize prompt
         conversation_without_assistant = conversation[:-1]
-        
         prompt_encoding = self.tokenizer.apply_chat_template(
             conversation_without_assistant,
             tokenize=True,
@@ -85,11 +90,11 @@ class LanguageDS:
             return_tensors=None
         )
         
-            # Check if prompt is too long
-        if len(prompt_encoding) > 200:  # ← Reasonable limit for prompts
-            print(f"Skipping sample with long prompt: {len(prompt_encoding)} tokens")
+        # Check prompt length
+        if len(prompt_encoding) > 200:
             return {"input_ids": None, "labels": None}
         
+        # Tokenize full conversation
         full_encoding = self.tokenizer.apply_chat_template(
             conversation,
             tokenize=True,
@@ -98,21 +103,28 @@ class LanguageDS:
             return_tensors=None
         )
         
-            # Check total length
-        if len(full_encoding) > 512:  # ← Reasonable limit for full conversation
-            print(f"Skipping sample with long total: {len(full_encoding)} tokens")
+        # Check total length
+        MIN_TOTAL_TOKENS = 30
+        MAX_TOTAL_TOKENS = 512
+        
+        if len(full_encoding) < MIN_TOTAL_TOKENS or len(full_encoding) > MAX_TOTAL_TOKENS:
             return {"input_ids": None, "labels": None}
         
-        # CREATE LABELS: mask everything except the assistant's response
+        # Create labels
         prompt_length = len(prompt_encoding)
         labels = [-100] * prompt_length + full_encoding[prompt_length:]
         
+        # ============================================================
+        # ✅ ADD THIS - Store original text for testing!
+        # ============================================================
         return {
             "input_ids": full_encoding,
-            "labels": labels
+            "labels": labels,
+            "source_text": english_text,     
+            "target_text": portuguese_text  
         }
 
-    def create_datasets(self, save=False):
+    def create_datasets(self, save=True):
         """
         Create train/valid/test datasets from OPUS or Kaggle data.
         """
@@ -159,6 +171,32 @@ class LanguageDS:
             raw_dataset = Dataset.from_pandas(df)
             print(f"Loaded Kaggle dataset: {len(raw_dataset)} samples")
             print(f"Sample row: {raw_dataset[0]}")
+            
+        elif self.dataset == 'flores':
+            flores = load_dataset(
+                "facebook/flores",
+                "eng_Latn-por_Latn",
+                trust_remote_code=False,
+                download_mode="force_redownload"  # Force clean download
+            )
+
+            
+            def map_flores(ex):
+                return {'translation': {'en': ex['sentence_eng_Latn'], 'pt': ex['sentence_por_Latn']}}
+            
+            # Get both splits
+            val = flores['dev'].map(map_flores)
+            test = flores['devtest'].map(map_flores)
+            
+            # Process both
+            val_processed = [self.process_sample(s) for s in val if s]
+            val_processed = [x for x in val_processed if x['input_ids']]
+            
+            test_processed = [self.process_sample(s) for s in test if s]
+            test_processed = [x for x in test_processed if x['input_ids']]
+            
+            return None, Dataset.from_list(val_processed), Dataset.from_list(test_processed)
+                    
         else:
             raise ValueError(f"Unknown dataset: {self.dataset}")
         
@@ -241,26 +279,26 @@ if __name__ == "__main__":
     
     tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
     
-    print("="*80)
-    print("TESTING CUSTOM CHAT TEMPLATE (REMOVES DEFAULT SYSTEM)")
-    print("="*80)
+    # print("="*80)
+    # print("TESTING CUSTOM CHAT TEMPLATE (REMOVES DEFAULT SYSTEM)")
+    # print("="*80)
     
-    ds = LanguageDS(tokenizer, dataset='opus_books')
-    train, val, test = ds.create_datasets(save=False)
+    # ds = LanguageDS(tokenizer, dataset='opus100')
+    # train, val, test = ds.create_datasets(save=False)
     
-    print("\nFirst 3 samples:")
-    for i in range(min(3, len(train))):
-        text = tokenizer.decode(train[i]['input_ids'])
-        print(f"\n{'='*60}")
-        print(f"Sample {i+1}:")
-        print(f"{'='*60}")
-        print(text)
+    # print("\nFirst 3 samples:")
+    # for i in range(min(3, len(train))):
+    #     text = tokenizer.decode(train[i]['input_ids'])
+    #     print(f"\n{'='*60}")
+    #     print(f"Sample {i+1}:")
+    #     print(f"{'='*60}")
+    #     print(text)
         
         
     import ipdb; ipdb.set_trace()
         
         
-    ds = LanguageDS(tokenizer, dataset='kaggle')
+    ds = LanguageDS(tokenizer, dataset='opus100')
     train, val, test = ds.create_datasets(save=False)
     
     print("\nFirst 3 samples:")
