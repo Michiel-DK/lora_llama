@@ -2,6 +2,7 @@
 import os
 
 HF_TOKEN = os.getenv('HUGGINGFACE_HUB_TOKEN')
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 
 PROJECT_NAME = 'EN_PT_TRANSLATION_LORA'
 
@@ -20,8 +21,9 @@ CACHE_DIR = "./cache/"
 MAX_SEQ_LENGTH = 512
 
 MAX_NEW_TOKENS = 150
+MIN_WORDS = 5
 
-DATASET_SAMPLES = None
+DATASET_SAMPLES = 2000
 
 DATASET = 'opus_books' 
 
@@ -43,7 +45,7 @@ else:  # 8B+
     LORA_RANK = 8  # Conservative
 
 # Training Configuration
-EPOCHS = 10
+EPOCHS = 5
 
 # LoRA Configuration (HuggingFace PEFT format)
 LORA_CONFIG = {
@@ -97,3 +99,8 @@ QUANTIZATION_CONFIG = {
     "bnb_4bit_quant_type": "nf4",
     "bnb_4bit_use_double_quant": True,
 }
+
+
+#### JUDGE DATA FORMATTING AND SPLITTING ####
+
+JUDGE_DATA_FILE = os.path.join(os.path.dirname(__file__),'datasets', 'judge_eval', 'judge_training_data.json')

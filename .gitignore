@@ -10,3 +10,4 @@ logs/*
 cache/*
 outputs/*
 wandb/*
+*.json
