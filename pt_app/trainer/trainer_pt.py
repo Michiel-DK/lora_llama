@@ -823,11 +823,12 @@ if __name__ == "__main__":
 
     wandb.init(
         project=params.PROJECT_NAME,
-        name=f"{params.MODEL_NAME}-{params.DATASET}-{params.EPOCHS}ep-{datetime.now().strftime('%Y%m%d_%H%M')}",
+        name=f"{params.MODEL_NAME}-{params.DATASET}-{params.DATASET_SAMPLES}-{params.EPOCHS}ep-{datetime.now().strftime('%Y%m%d_%H%M')}",
         tags=["baseline"],
         config={
             "model": params.MODEL_NAME,
             "dataset": params.DATASET,
+            'n_samples': params.DATASET_SAMPLES,
             "max_seq_length": params.MAX_SEQ_LENGTH,
             "max_new_tokens": params.MAX_NEW_TOKENS,
             "batch_size": params.BATCH_SIZE,  # Will be set by trainer

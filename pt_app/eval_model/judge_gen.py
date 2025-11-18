@@ -8,7 +8,7 @@ from groq import Groq
 from tqdm import tqdm
 
 # Rate limiting configuration for FREE TIER
-REQUESTS_PER_MINUTE = 15  # Reduced from 25 for safety
+REQUESTS_PER_MINUTE = 12  # Reduced from 25 for safety
 REQUESTS_PER_DAY = 14000
 TOKENS_PER_MINUTE = 10000
 MIN_DELAY_BETWEEN_REQUESTS = 5.5  # Increased from 2.5 for safety
@@ -204,6 +204,7 @@ def generate_evaluation_examples(client, rate_limiter, source_en, reference_pt, 
             if attempt < max_retries - 1:
                 time.sleep(2)
                 continue
+            
         except Exception as e:
             error_msg = str(e).lower()
             # Check if it's a rate limit error
@@ -211,6 +212,8 @@ def generate_evaluation_examples(client, rate_limiter, source_en, reference_pt, 
                 print(f"  API rate limit hit! Waiting 65 seconds...")
                 time.sleep(65)  # Wait longer than 60s
                 # Don't count this as an attempt
+                rate_limiter.request_times = []
+                rate_limiter.minute_request_count = 0
                 continue
             else:
                 print(f"  Error (attempt {attempt + 1}): {str(e)[:100]}")

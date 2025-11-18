@@ -65,13 +65,13 @@ class LanguageDS:
         
         # Skip empty translations
         if not english_text or not portuguese_text:
-            return {"input_ids": None, "labels": None}
+            return {"input_ids": None, "labels": None, "source_text": None, "target_text": None}
         
         # Skip very short texts
         MIN_WORDS = 5
         if (len(english_text.split()) < MIN_WORDS or 
             len(portuguese_text.split()) < MIN_WORDS):
-            return {"input_ids": None, "labels": None}
+            return {"input_ids": None, "labels": None, "source_text": None, "target_text": None}
         
         # Create conversation
         conversation = [
@@ -92,7 +92,7 @@ class LanguageDS:
         
         # Check prompt length
         if len(prompt_encoding) > 200:
-            return {"input_ids": None, "labels": None}
+            return {"input_ids": None, "labels": None, "source_text": None, "target_text": None}
         
         # Tokenize full conversation
         full_encoding = self.tokenizer.apply_chat_template(
@@ -108,7 +108,7 @@ class LanguageDS:
         MAX_TOTAL_TOKENS = 512
         
         if len(full_encoding) < MIN_TOTAL_TOKENS or len(full_encoding) > MAX_TOTAL_TOKENS:
-            return {"input_ids": None, "labels": None}
+            return {"input_ids": None, "labels": None, "source_text": None, "target_text": None}
         
         # Create labels
         prompt_length = len(prompt_encoding)

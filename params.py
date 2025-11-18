@@ -23,7 +23,7 @@ MAX_SEQ_LENGTH = 512
 MAX_NEW_TOKENS = 150
 MIN_WORDS = 5
 
-DATASET_SAMPLES = 500
+DATASET_SAMPLES = 2000
 
 DATASET = 'opus_books' 
 
@@ -45,7 +45,7 @@ else:  # 8B+
     LORA_RANK = 8  # Conservative
 
 # Training Configuration
-EPOCHS = 4
+EPOCHS = 5
 
 # LoRA Configuration (HuggingFace PEFT format)
 LORA_CONFIG = {
