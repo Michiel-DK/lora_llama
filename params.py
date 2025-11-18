@@ -45,7 +45,7 @@ else:  # 8B+
     LORA_RANK = 8  # Conservative
 
 # Training Configuration
-EPOCHS = 5
+EPOCHS = 4
 
 # LoRA Configuration (HuggingFace PEFT format)
 LORA_CONFIG = {

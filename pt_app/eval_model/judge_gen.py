@@ -8,72 +8,51 @@ from groq import Groq
 from tqdm import tqdm
 
 # Rate limiting configuration for FREE TIER
-# Using llama-3.3-70b-versatile: 30 RPM, 14.4K RPD, 12K TPM
-REQUESTS_PER_MINUTE = 25  # Slightly under limit for safety
-REQUESTS_PER_DAY = 14000  # Slightly under limit
-TOKENS_PER_MINUTE = 10000  # Conservative estimate
-MIN_DELAY_BETWEEN_REQUESTS = 2.5  # seconds (60/25 = 2.4)
+REQUESTS_PER_MINUTE = 15  # Reduced from 25 for safety
+REQUESTS_PER_DAY = 14000
+TOKENS_PER_MINUTE = 10000
+MIN_DELAY_BETWEEN_REQUESTS = 5.5  # Increased from 2.5 for safety
 
 class RateLimiter:
     """Track and enforce rate limits"""
     def __init__(self):
         self.request_times = []
-        self.minute_request_count = 0
-        self.minute_reset_time = datetime.now() + timedelta(minutes=1)
         self.total_requests = 0
         self.rate_limit_headers = []
     
     def wait_for_rate_limit(self):
-        """Smart rate limiting that respects both RPM and RPD"""
-        current_time = datetime.now()
+        """Enforce rate limit with proper tracking"""
+        current_time = time.time()
         
-        # Reset minute counter if needed
-        if current_time >= self.minute_reset_time:
-            self.minute_request_count = 0
-            self.minute_reset_time = current_time + timedelta(minutes=1)
+        # Remove requests older than 60 seconds
+        cutoff_time = current_time - 60
+        self.request_times = [t for t in self.request_times if t > cutoff_time]
         
-        # Check if we need to wait for RPM
-        if self.minute_request_count >= REQUESTS_PER_MINUTE:
-            wait_seconds = (self.minute_reset_time - current_time).total_seconds()
-            if wait_seconds > 0:
-                print(f"  [Rate limit] Waiting {wait_seconds:.1f}s for RPM reset...")
-                time.sleep(wait_seconds + 0.5)
-                self.minute_request_count = 0
-                self.minute_reset_time = datetime.now() + timedelta(minutes=1)
+        # DEBUG: Print current state
+        print(f"  [DEBUG] Requests in last 60s: {len(self.request_times)}")
+        
+        # Check if we're at the limit
+        if len(self.request_times) >= REQUESTS_PER_MINUTE:
+            # Calculate how long to wait
+            oldest_request = self.request_times[0]
+            wait_time = 60 - (current_time - oldest_request) + 2  # +2 for safety buffer
+            
+            if wait_time > 0:
+                print(f"  [Rate limit] Waiting {wait_time:.1f}s...")
+                time.sleep(wait_time)
+                # Clear old requests after waiting
+                self.request_times = []
         
         # Enforce minimum delay between requests
         if self.request_times:
-            time_since_last = (current_time - self.request_times[-1]).total_seconds()
+            time_since_last = current_time - self.request_times[-1]
             if time_since_last < MIN_DELAY_BETWEEN_REQUESTS:
                 sleep_time = MIN_DELAY_BETWEEN_REQUESTS - time_since_last
                 time.sleep(sleep_time)
         
-        # Track this request
-        self.request_times.append(datetime.now())
-        self.minute_request_count += 1
+        # Record this request
+        self.request_times.append(time.time())
         self.total_requests += 1
-        
-        # Keep only last 60 seconds of requests for tracking
-        cutoff = datetime.now() - timedelta(seconds=60)
-        self.request_times = [t for t in self.request_times if t > cutoff]
-    
-    def add_headers(self, response_headers):
-        """Store rate limit headers from response"""
-        headers = {
-            'remaining_requests': response_headers.get('x-ratelimit-remaining-requests'),
-            'remaining_tokens': response_headers.get('x-ratelimit-remaining-tokens'),
-            'limit_requests': response_headers.get('x-ratelimit-limit-requests'),
-            'limit_tokens': response_headers.get('x-ratelimit-limit-tokens'),
-            'reset_requests': response_headers.get('x-ratelimit-reset-requests'),
-            'reset_tokens': response_headers.get('x-ratelimit-reset-tokens'),
-        }
-        self.rate_limit_headers.append(headers)
-    
-    def get_latest_limits(self):
-        """Get most recent rate limit info"""
-        if self.rate_limit_headers:
-            return self.rate_limit_headers[-1]
-        return None
 
 def generate_evaluation_examples(client, rate_limiter, source_en, reference_pt, max_retries=3):
     """
@@ -81,54 +60,97 @@ def generate_evaluation_examples(client, rate_limiter, source_en, reference_pt, 
     Returns list of evaluation examples
     """
     
-    prompt = f"""You are a translation quality assessment expert for English to Portuguese translation.
+    prompt = f"""You are a translation quality assessment expert for English → Portuguese translation.
 
-                Given this professional translation:
-                Source (English): {source_en}
-                Reference (Portuguese): {reference_pt}
+        Given this professional translation:
+        Source (English): {source_en}
+        Reference (Portuguese): {reference_pt}
 
-                Generate exactly 4 Portuguese translations with different quality levels:
+        Your task is to generate exactly **4 Portuguese translations** with controlled, explicit error types at different quality levels. Accept both European and Brazilian Portuguese variants.
 
-                1. POOR QUALITY (Score 3-5/10):
-                - Major grammar error (wrong verb tense, wrong subject-verb agreement)
-                - OR missing critical word
-                - OR completely wrong word choice
-                
-                2. MEDIOCRE QUALITY (Score 5-7/10):
-                - Minor error: wrong preposition, missing article, or extra word
-                - Meaning preserved but not natural
-                - Awkward phrasing
-                
-                3. GOOD QUALITY (Score 7-9/10):
-                - Mostly correct but slightly unnatural
-                - Minor word order issue OR overly literal translation
-                - Still understandable and acceptable
-                
-                4. EXCELLENT QUALITY (Score 9-10/10):
-                - Alternative translation that's equally good or better
-                - Natural and fluent Portuguese
-                - Different word choice but perfectly valid
+        CRITICAL GLOBAL RULES:
+        - All translations must preserve the core meaning of the English source
+        - Do NOT add new information or omit ideas unless the error type explicitly requires it
+        - Do NOT leave any words in English
+        - Keep sentence structure reasonably close to the original
+        - Each variation must contain ONLY the intended error(s)—no accidental mistakes
+        - Every item in "issues" must correspond to a VISIBLE error in the translation
+        - For GOOD and EXCELLENT translations, the issues list MUST be empty
 
-                For EACH translation, provide:
-                - translation: The Portuguese text
-                - score: Number from 0-10
-                - issues: List of specific problems (empty list if none)
-                - feedback: 1-2 sentences explaining the assessment
+        SCORING GUIDELINES:
+        0-2: Incomprehensible or completely wrong meaning
+        3-4: ONE major error that significantly impacts comprehension
+        5-6: ONE major error with minor impact OR 2-3 minor errors combined
+        7-8: 1-2 minor errors, meaning fully preserved
+        9: Nearly perfect, one extremely subtle stylistic issue only
+        10: Perfect or equally valid alternative
 
-                Return ONLY a valid JSON array with no additional text:
-                [
-                {{
-                    "translation": "Portuguese text here",
-                    "score": 5,
-                    "issues": ["wrong verb", "missing preposition"],
-                    "feedback": "Uses 'gosto' (like) instead of 'adoro' (love). Missing preposition 'de'."
-                }},
-                ...
-                ]"""
+        REQUIRED VARIATIONS:
 
+        1. LOW QUALITY (Score 3-5):
+        Introduce EXACTLY ONE major error:
+        a) Wrong verb with semantic shift: "gostar"→"adorar" (like→love), "ir"→"vir" (go→come)
+        b) Missing required word: omit article ("o", "a") or preposition ("de", "para", "em")
+        c) Wrong word - same category: "cão"→"gato" (dog→cat), "carro"→"ônibus" (car→bus)
+        d) Diacritic changing meaning: "cafe"→"café", "esta"→"está", "e"→"é"
+        e) Wrong tense affecting meaning: present instead of past or vice versa
+        f) Gender/number disagreement: "o casa" (masc+fem), "os gato" (plural+singular)
+        
+        Score 3-4: Error significantly impacts understanding
+        Score 5-6: Error noticeable but meaning still clear
+
+        2. MEDIUM QUALITY (Score 6-7):
+        Introduce 1-2 minor errors:
+        a) Unnecessary or missing article where both work: "o café" vs "café"
+        b) Missing non-critical diacritic: "voce"→"você", "nao"→"não"
+        c) Slightly unnatural word choice: correct but uncommon synonym
+        d) Minor preposition variation: "em casa" vs "na casa"
+        e) Missing contraction: "de o" instead of "do"
+        
+        Choose 1 error for score 7, or 2 errors for score 6
+
+        3. GOOD QUALITY (Score 8-9):
+        Nearly perfect with EXACTLY ONE extremely subtle issue:
+        a) Slight formality mismatch for context
+        b) Word order acceptable but not optimal: "Sempre eu como" vs "Eu como sempre"
+        c) Overly literal phrasing: grammatically correct but native would phrase differently
+        
+        Score 9: One subtle issue
+        Score 8: Issue slightly more noticeable
+        ALL grammar, vocabulary, diacritics must be correct
+
+        4. EXCELLENT QUALITY (Score 10):
+        Must be:
+        - Grammatically perfect, all diacritics correct
+        - Natural Portuguese (not word-for-word translation)
+        - Meaning fully preserved
+        - Different from reference in at least one way:
+            * Different synonym ("adorar" vs "amar")
+            * Different structure ("Eu adoro café" vs "Adoro café")
+            * Different word order (if both valid)
+        - NO errors or issues whatsoever
+
+        IMPORTANT CONSTRAINTS:
+        - Do not combine multiple major errors in one translation
+        - If introducing a diacritic error, choose words where it matters: café≠cafe, está≠esta
+        - Each variation must have CLEARLY DIFFERENT error types
+        - Be specific about which error you introduced in the error_type field
+
+        OUTPUT FORMAT:
+        For EACH translation, return:
+        {{
+        "translation": "Portuguese text",
+        "score": exact_number_0_to_10,
+        "error_type": "specific_error_introduced (or 'none' for score 10)",
+        "issues": ["specific", "observable", "problems"],
+        "feedback": "1-2 sentences explaining the score and error"
+        }}
+
+        Return ONLY a valid JSON array with 4 variations, ordered lowest to highest score.
+        """
     for attempt in range(max_retries):
         try:
-            # Wait for rate limit before making request
+            # CRITICAL: Wait for rate limit BEFORE making request
             rate_limiter.wait_for_rate_limit()
             
             response = client.chat.completions.create(
@@ -153,6 +175,8 @@ def generate_evaluation_examples(client, rate_limiter, source_en, reference_pt, 
             
             if start_idx == -1 or end_idx == 0:
                 print(f"  No JSON array found (attempt {attempt + 1})")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
                 continue
                 
             json_str = content[start_idx:end_idx]
@@ -161,6 +185,8 @@ def generate_evaluation_examples(client, rate_limiter, source_en, reference_pt, 
             # Validate we got 4 variations
             if len(variations) != 4:
                 print(f"  Got {len(variations)} variations instead of 4 (attempt {attempt + 1})")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
                 continue
             
             # Validate structure
@@ -169,23 +195,28 @@ def generate_evaluation_examples(client, rate_limiter, source_en, reference_pt, 
                 return variations
             else:
                 print(f"  Missing required keys (attempt {attempt + 1})")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
                 continue
                 
         except json.JSONDecodeError as e:
-            print(f"  JSON decode error (attempt {attempt + 1}): {str(e)[:50]}")
+            print(f"  JSON decode error (attempt {attempt + 1})")
             if attempt < max_retries - 1:
                 time.sleep(2)
                 continue
         except Exception as e:
+            error_msg = str(e).lower()
             # Check if it's a rate limit error
-            if "429" in str(e) or "rate" in str(e).lower():
-                print(f"  Rate limit hit, waiting 60 seconds...")
-                time.sleep(60)
+            if "429" in str(e) or "rate_limit" in error_msg or "too many requests" in error_msg:
+                print(f"  API rate limit hit! Waiting 65 seconds...")
+                time.sleep(65)  # Wait longer than 60s
+                # Don't count this as an attempt
                 continue
-            print(f"  Error (attempt {attempt + 1}): {str(e)[:100]}")
-            if attempt < max_retries - 1:
-                time.sleep(2)
-                continue
+            else:
+                print(f"  Error (attempt {attempt + 1}): {str(e)[:100]}")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
     
     return None
 
@@ -289,7 +320,7 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
     print(f"Daily limit usage: ~{sample_size}/{REQUESTS_PER_DAY} ({sample_size/REQUESTS_PER_DAY*100:.1f}%)")
     print("="*60)
     print("\nStarting generation...")
-    print("(Progress saves every 100 examples)")
+    print("(Progress saves every 50 examples)")
     print("="*60 + "\n")
     
     # Generate evaluation dataset
@@ -316,6 +347,12 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
             eval_example = format_evaluation_example(source_en, reference_pt, variation)
             evaluation_data.append(eval_example)
         
+    # Save progress every 10 examples (CHANGED)
+        if (idx + 1) % 10 == 0:
+            progress_file = f"judge_data_progress_{idx + 1}.json"
+            with open(progress_file, "w", encoding="utf-8") as f:
+                json.dump(evaluation_data, f, ensure_ascii=False, indent=2)
+        
         # Progress report every 50 examples
         if (idx + 1) % 50 == 0:
             elapsed = (datetime.now() - start_time).total_seconds() / 60
@@ -328,15 +365,9 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
             print(f"Failed: {failed_count}")
             print(f"Rate: {rate:.1f} FLORES/min")
             print(f"Elapsed: {elapsed:.1f} min | Remaining: ~{remaining:.1f} min")
+            print(f"Latest save: judge_data_progress_{(idx + 1) // 10 * 10}.json")
             print(f"{'='*60}")
         
-        # Save progress every 100 examples
-        if (idx + 1) % 100 == 0:
-            progress_file = f"judge_data_progress_{idx + 1}.json"
-            with open(progress_file, "w", encoding="utf-8") as f:
-                json.dump(evaluation_data, f, ensure_ascii=False, indent=2)
-            print(f"  → Saved progress to {progress_file}")
-    
     # Final statistics
     elapsed_time = (datetime.now() - start_time).total_seconds()
     elapsed_minutes = elapsed_time / 60

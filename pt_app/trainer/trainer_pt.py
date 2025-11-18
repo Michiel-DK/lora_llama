@@ -490,40 +490,69 @@ class UniversalTrainer:
             
             print(f"Processing {len(test_subset)} test samples...")
             
+        # Prepare test data
+        if test_dataset is not None and len(test_dataset) > 0:
+            print(f"✅ Using test dataset with {len(test_dataset)} samples")
+            
+            # Limit samples if requested
+            if max_samples:
+                test_subset = test_dataset.select(range(min(max_samples, len(test_dataset))))
+            else:
+                test_subset = test_dataset
+            
+            prompts = []
+            references = []
+            
+            print(f"Processing {len(test_subset)} test samples...")
+            
             for i, test_item in enumerate(test_subset):
-                if 'source_text' in test_item:
-                    input_text = test_item['source_text']
+                # Extract clean English text
+                if 'source_text' in test_item and test_item['source_text']:
+                    english_text = test_item['source_text']
                     expected_output = test_item['target_text']
                 else:
-                    input_text, expected_output = extract_text_from_test_item(test_item)
+                    english_text, expected_output = extract_text_from_test_item(test_item)
                 
-                if input_text is None or expected_output is None:
+                if english_text is None or expected_output is None or not english_text.strip():
+                    print(f"⚠️  Skipping sample {i}: empty text")
                     continue
                 
-                prompts.append(input_text)
+                # ✅ BUILD PROPER PROMPT (matching your training format!)
+                prompt = f"""<|start_header_id|>user<|end_header_id|>
+
+        Translate to Portuguese: {english_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+        """
+                
+                prompts.append(prompt)
                 references.append(expected_output)
                 
-                if i < 3:  # Show first 3 examples
+                # Show first 3 examples
+                if i < 3:
                     print(f"Example {i+1}:")
-                    print(f"  Input: {input_text[:100]}...")
+                    print(f"  Input: {english_text[:100]}...")
                     print(f"  Expected: {expected_output}")
             
-        else:
+            if len(prompts) == 0:
+                print("⚠️  No valid samples extracted! Falling back to test sentences.")
+                test_dataset = None  # Trigger fallback
+
+        if test_dataset is None or len(prompts) == 0:
             # Fallback to simple test sentences
+            print("⚠️  Using fallback test sentences")
             test_sentences = ["Hello!", "Thank you.", "Good morning."]
             prompts = []
             references = ["Olá!", "Obrigado.", "Bom dia."]
             
             for sentence in test_sentences:
-                prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+                # ✅ Use YOUR custom format (not the system message one!)
+                prompt = f"""<|start_header_id|>user<|end_header_id|>
 
-                        You are a helpful assistant that translates English text to Portuguese. Provide accurate and natural translations.<|eot_id|><|start_header_id|>user<|end_header_id|>
+        Translate to Portuguese: {sentence}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
-                        {sentence}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-
-                        """
+        """
                 prompts.append(prompt)
-        
+            
         print("\n" + "="*80)
         print("COMPREHENSIVE TRANSLATION EVALUATION")
         if use_quality_filter:
@@ -816,11 +845,11 @@ if __name__ == "__main__":
     
     # Load datasets (already tokenized)
     print("[INFO] Loading datasets...")
-    train, val, opus_test = LanguageDS(
+    train, val, test = LanguageDS(
         tokenizer=tokenizer,
         dataset=params.DATASET,
     ).create_datasets(save=True)
-    
+        
     print("\n" + "="*80)
     print("VERIFYING TRAINING DATA QUALITY")
     print("="*80)
@@ -854,7 +883,7 @@ if __name__ == "__main__":
     print("Verification complete!")
     print("="*80 + "\n")
 
-    print(f"[INFO] Dataset sizes - Train: {len(train)}, Val: {len(val) if val else 0}, OPUS Test: {len(opus_test) if opus_test else 0}")
+    print(f"[INFO] Dataset sizes - Train: {len(train)}, Val: {len(val) if val else 0}, OPUS Test: {len(test) if test else 0}")
     # Train
     adapter_path = trainer.train(train, val)
     
@@ -864,7 +893,7 @@ if __name__ == "__main__":
     print("="*80)
     opus_results = trainer.test_generation(
         adapter_path=adapter_path,
-        test_dataset=opus_test,
+        test_dataset=test,
         max_samples=20,  #SET TO NONE FOR FULL TESTSET
         use_quality_filter=True,
         verbose_filter=False  # Set to True to see filtering details
