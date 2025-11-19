@@ -45,7 +45,7 @@ else:  # 8B+
     LORA_RANK = 8  # Conservative
 
 # Training Configuration
-EPOCHS = 5
+EPOCHS = 10
 
 # LoRA Configuration (HuggingFace PEFT format)
 LORA_CONFIG = {
@@ -99,6 +99,38 @@ QUANTIZATION_CONFIG = {
     "bnb_4bit_quant_type": "nf4",
     "bnb_4bit_use_double_quant": True,
 }
+
+# Generation Strategy Configurations
+GENERATION_CONFIGS = {
+    "greedy": {
+        "strategy": "greedy",
+        "max_new_tokens": 150,
+        "do_sample": False,              # Greedy = most likely token
+        "no_repeat_ngram_size": 3,
+        "repetition_penalty": 1.1,       # Lower than 1.2
+    },
+    "beam_search": {
+        "strategy": "beam_search",
+        "max_new_tokens": 150,
+        "num_beams": 4,                  # Explore 4 alternatives
+        "early_stopping": True,          # Stop when all beams finish
+        "do_sample": False,              # Deterministic beam search
+        "no_repeat_ngram_size": 3,
+        "repetition_penalty": 1.1,
+    },
+    "sampling": {
+        "strategy": "sampling",
+        "max_new_tokens": 150,
+        "temperature": 0.3,              # Low temp = more deterministic
+        "top_p": 0.95,                   # Slightly higher than before
+        "do_sample": True,
+        "no_repeat_ngram_size": 3,
+        "repetition_penalty": 1.1,
+    },
+}
+
+# Default generation strategy to use
+DEFAULT_GENERATION_STRATEGY = "greedy"
 
 
 #### JUDGE DATA FORMATTING AND SPLITTING ####

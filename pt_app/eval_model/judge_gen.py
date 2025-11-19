@@ -8,10 +8,10 @@ from groq import Groq
 from tqdm import tqdm
 
 # Rate limiting configuration for FREE TIER
-REQUESTS_PER_MINUTE = 15  # Reduced from 25 for safety
+REQUESTS_PER_MINUTE = 50  # Reduced from 25 for safety
 REQUESTS_PER_DAY = 14000
 TOKENS_PER_MINUTE = 10000
-MIN_DELAY_BETWEEN_REQUESTS = 5.5  # Increased from 2.5 for safety
+MIN_DELAY_BETWEEN_REQUESTS = 1.5  # Increased from 2.5 for safety
 
 class RateLimiter:
     """Track and enforce rate limits"""
@@ -154,7 +154,8 @@ def generate_evaluation_examples(client, rate_limiter, source_en, reference_pt, 
             rate_limiter.wait_for_rate_limit()
             
             response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                #model="llama-3.3-70b-versatile",
+                model = 'qwen/qwen3-32b',
                 messages=[
                     {"role": "system", "content": "You are a translation quality expert. Always respond with valid JSON only."},
                     {"role": "user", "content": prompt}
@@ -277,7 +278,7 @@ def print_rate_limit_summary(rate_limiter, elapsed_time):
     
     print("="*60)
 
-def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
+def main(flores_file, num_samples=None, output_file="judge_training_data.json", start_from=0):
     """
     Main function to generate evaluation data
     
@@ -285,6 +286,7 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
         flores_file: Path to FLORES dataset JSON file
         num_samples: Number of FLORES examples to process (None = all)
         output_file: Output filename for the training data
+        start_from: Starting index in FLORES dataset (for resuming)
     """
     # Initialize
     client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
@@ -299,12 +301,23 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
     
     # Determine sample size
     total_available = len(flores_data)
-    if num_samples is None:
-        sample_size = total_available
-    else:
-        sample_size = min(num_samples, total_available)
     
-    print(f"Will process: {sample_size} examples")
+    # NEW: Handle start_from
+    if start_from > 0:
+        print(f"▶ Resuming from FLORES example {start_from}")
+        if start_from >= total_available:
+            print(f"ERROR: start_from ({start_from}) >= total examples ({total_available})")
+            return None, None
+    
+    # Calculate end index
+    if num_samples is None:
+        end_idx = total_available
+    else:
+        end_idx = min(start_from + num_samples, total_available)
+    
+    sample_size = end_idx - start_from
+    
+    print(f"Will process: examples {start_from} to {end_idx-1} ({sample_size} total)")
     
     # Estimate time based on rate limits
     estimated_minutes = (sample_size / REQUESTS_PER_MINUTE) + 5
@@ -313,6 +326,7 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
     print("\n" + "="*60)
     print("GENERATION PLAN")
     print("="*60)
+    print(f"FLORES range: {start_from} to {end_idx-1}")
     print(f"FLORES examples to process: {sample_size}")
     print(f"Expected evaluation examples: ~{sample_size * 4}")
     print(f"Rate limit: {REQUESTS_PER_MINUTE} requests/minute")
@@ -328,7 +342,8 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
     failed_count = 0
     start_time = datetime.now()
     
-    for idx in tqdm(range(sample_size), desc="Generating"):
+    # CHANGED: Loop from start_from to end_idx
+    for idx in tqdm(range(start_from, end_idx), desc="Generating"):
         example = flores_data[idx]
         
         # Extract source and reference from example
@@ -347,7 +362,7 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
             eval_example = format_evaluation_example(source_en, reference_pt, variation)
             evaluation_data.append(eval_example)
         
-    # Save progress every 10 examples (CHANGED)
+        # Save progress every 10 examples
         if (idx + 1) % 10 == 0:
             progress_file = f"judge_data_progress_{idx + 1}.json"
             with open(progress_file, "w", encoding="utf-8") as f:
@@ -356,11 +371,13 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
         # Progress report every 50 examples
         if (idx + 1) % 50 == 0:
             elapsed = (datetime.now() - start_time).total_seconds() / 60
-            rate = (idx + 1) / elapsed if elapsed > 0 else 0
-            remaining = (sample_size - idx - 1) / rate if rate > 0 else 0
+            # CHANGED: Calculate based on actual progress from start_from
+            processed = (idx + 1) - start_from
+            rate = processed / elapsed if elapsed > 0 else 0
+            remaining = (end_idx - idx - 1) / rate if rate > 0 else 0
             
             print(f"\n{'='*60}")
-            print(f"Progress: {idx + 1}/{sample_size} ({(idx+1)/sample_size*100:.1f}%)")
+            print(f"Progress: {idx + 1}/{end_idx} ({(idx + 1 - start_from)/sample_size*100:.1f}%)")
             print(f"Generated: {len(evaluation_data)} examples")
             print(f"Failed: {failed_count}")
             print(f"Rate: {rate:.1f} FLORES/min")
@@ -376,12 +393,17 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
     print("GENERATION COMPLETE!")
     print("="*60)
     print(f"Total time: {elapsed_minutes:.1f} minutes ({elapsed_minutes/60:.1f} hours)")
+    print(f"FLORES range processed: {start_from} to {end_idx-1}")
     print(f"FLORES examples processed: {sample_size}")
     print(f"Evaluation examples generated: {len(evaluation_data)}")
     print(f"Failed generations: {failed_count}")
     print(f"Success rate: {(sample_size - failed_count) / sample_size * 100:.1f}%")
     print(f"Average rate: {sample_size / elapsed_minutes:.1f} FLORES/min")
     print("="*60)
+    
+    # CHANGED: Include range in output filename if starting from middle
+    if start_from > 0 or end_idx < total_available:
+        output_file = output_file.replace(".json", f"_{start_from}_{end_idx}.json")
     
     # Save final dataset
     with open(output_file, "w", encoding="utf-8") as f:
@@ -392,6 +414,9 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
     # Save statistics
     stats = {
         "generation_date": datetime.now().isoformat(),
+        "flores_range": f"{start_from}-{end_idx-1}",
+        "start_index": start_from,
+        "end_index": end_idx,
         "total_flores_examples": sample_size,
         "total_evaluation_examples": len(evaluation_data),
         "failed_generations": failed_count,
@@ -400,15 +425,16 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
         "time_seconds": elapsed_time,
         "time_minutes": elapsed_minutes,
         "rate_per_minute": sample_size / elapsed_minutes,
-        "model_used": "llama-3.3-70b-versatile",
+        "model_used": "llama-3.1-8b-instant",
         "rate_limit_rpm": REQUESTS_PER_MINUTE,
         "total_api_calls": rate_limiter.total_requests,
     }
     
-    with open("generation_stats.json", "w") as f:
+    stats_file = f"generation_stats_{start_from}_{end_idx}.json"
+    with open(stats_file, "w") as f:
         json.dump(stats, f, indent=2)
     
-    print(f"✓ Statistics saved to: generation_stats.json")
+    print(f"✓ Statistics saved to: {stats_file}")
     
     # Display sample examples
     print("\n" + "="*60)
@@ -424,6 +450,7 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json"):
     print_rate_limit_summary(rate_limiter, elapsed_time)
     
     return evaluation_data, stats
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -465,6 +492,15 @@ Examples:
         default='judge_training_data.json',
         help='Output filename (default: judge_training_data.json)'
     )
+    
+    # NEW: Add start parameter
+    parser.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="Start from this FLORES example index (default: 0, useful for resuming)"
+    )
+    
     
     args = parser.parse_args()
     

@@ -80,8 +80,13 @@ class UniversalTrainer:
         os.makedirs(self.adapter_path, exist_ok=True)
         
     
-    def get_model(self) -> Tuple[Any, Any]:
-        """Load model - works on both MPS and CUDA"""
+    def get_model(self, apply_lora: bool = True) -> Tuple[Any, Any]:
+        """
+        Load model - works on both MPS and CUDA
+        
+        Args:
+            apply_lora: If True, applies LoRA adapters. If False, loads base model only.
+        """
         print(f"[INFO] Loading model: {self.model_name}")
         
         # Load model
@@ -116,18 +121,22 @@ class UniversalTrainer:
         )
         print("[INFO] Quality filter initialized")
         
-        # Apply LoRA
-        lora_config = LoraConfig(
-            r=params.LORA_CONFIG["r"],
-            lora_alpha=params.LORA_CONFIG["lora_alpha"],
-            lora_dropout=params.LORA_CONFIG["lora_dropout"],
-            target_modules=params.LORA_CONFIG["target_modules"],
-            bias="none",
-            task_type=TaskType.CAUSAL_LM,
-        )
-        
-        self.model = get_peft_model(self.model, lora_config)
-        self.model.print_trainable_parameters()
+        # Apply LoRA (only if requested)
+        if apply_lora:
+            lora_config = LoraConfig(
+                r=params.LORA_CONFIG["r"],
+                lora_alpha=params.LORA_CONFIG["lora_alpha"],
+                lora_dropout=params.LORA_CONFIG["lora_dropout"],
+                target_modules=params.LORA_CONFIG["target_modules"],
+                bias="none",
+                task_type=TaskType.CAUSAL_LM,
+            )
+            
+            self.model = get_peft_model(self.model, lora_config)
+            self.model.print_trainable_parameters()
+            print("[INFO] LoRA adapters applied")
+        else:
+            print("[INFO] Base model loaded WITHOUT LoRA adapters")
         
         # Move to device
         self.model = self.model.to(self.device)
@@ -252,57 +261,76 @@ class UniversalTrainer:
     def generate_translation(
         self, 
         prompt: str, 
-        max_new_tokens: int = 150,
-        temperature: float = 0.8,
-        top_p: float = 0.9,
+        generation_strategy: str = None,
+        max_new_tokens: int = None,
+        temperature: float = None,
+        top_p: float = None,
         use_quality_filter: bool = True,
         verbose: bool = False
-    ) -> Tuple[str, Optional[str]]:
+    ) -> Tuple[str, Optional[str], Dict[str, Any]]:
         """
         Generate translation with quality filtering and stopping criteria
         
         Args:
             prompt: Input prompt
-            max_new_tokens: Maximum tokens to generate
-            temperature: Sampling temperature
-            top_p: Nucleus sampling parameter
+            generation_strategy: Strategy name from params.GENERATION_CONFIGS (greedy, beam_search, sampling)
+                               If None, uses params.DEFAULT_GENERATION_STRATEGY
+            max_new_tokens: Override max_new_tokens from strategy (optional)
+            temperature: Override temperature from strategy (optional)
+            top_p: Override top_p from strategy (optional)
             use_quality_filter: Whether to apply quality filtering
             verbose: Print filtering details
             
         Returns:
-            Tuple of (raw_translation, filtered_translation)
+            Tuple of (raw_translation, filtered_translation, generation_config_dict)
         """
+        # Select generation strategy
+        if generation_strategy is None:
+            generation_strategy = params.DEFAULT_GENERATION_STRATEGY
+        
+        if generation_strategy not in params.GENERATION_CONFIGS:
+            raise ValueError(f"Unknown strategy '{generation_strategy}'. Choose from: {list(params.GENERATION_CONFIGS.keys())}")
+        
+        # Get base config from params
+        gen_config_dict = params.GENERATION_CONFIGS[generation_strategy].copy()
+        
+        # Apply overrides if provided
+        if max_new_tokens is not None:
+            gen_config_dict['max_new_tokens'] = max_new_tokens
+        if temperature is not None:
+            gen_config_dict['temperature'] = temperature
+        if top_p is not None:
+            gen_config_dict['top_p'] = top_p
+        
         # Tokenize input
         inputs = self.tokenizer(prompt, return_tensors="pt", max_length=512, truncation=True)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
         prompt_length = inputs['input_ids'].shape[1]
         
-        # Create stopping criteria
-        stopping_criteria = create_stopping_criteria_list(
-            tokenizer=self.tokenizer,
-            prompt_length=prompt_length,
-            max_new_tokens=max_new_tokens,
-            prevent_repetition=True,
-            prevent_language_switch=True,
-            check_after_tokens=100
-        )
+        # Create stopping criteria (only for greedy/sampling, not for beam search)
+        # Beam search has its own early stopping mechanism
+        stopping_criteria = None
+        if generation_strategy != "beam_search":
+            stopping_criteria = create_stopping_criteria_list(
+                tokenizer=self.tokenizer,
+                prompt_length=prompt_length,
+                max_new_tokens=gen_config_dict['max_new_tokens'],
+                prevent_repetition=True,
+                prevent_language_switch=True,
+                check_after_tokens=100
+            )
         
-        # Create generation config with improved parameters
+        # Create generation config from dict (excluding 'strategy' key)
+        gen_params = {k: v for k, v in gen_config_dict.items() if k != 'strategy'}
         generation_config = GenerationConfig(
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            do_sample=True,
-            no_repeat_ngram_size=3,        # Prevent 3-word repetitions
-            repetition_penalty=1.2,         # Penalize repeated tokens
             pad_token_id=self.tokenizer.pad_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
+            **gen_params
         )
         
-        print(f"🔍 DEBUG: generation_config.max_new_tokens = {generation_config.max_new_tokens}")
-    
-        # ... before generate ...
-        print(f"🔍 DEBUG: About to generate with input shape {inputs['input_ids'].shape}")
+        if verbose:
+            print(f"🔍 Using generation strategy: {generation_strategy}")
+            print(f"🔍 Config: {gen_config_dict}")
         
         
         # Generate
@@ -310,7 +338,7 @@ class UniversalTrainer:
             outputs = self.model.generate(
                 **inputs,
                 generation_config=generation_config,
-                stopping_criteria=stopping_criteria,
+                stopping_criteria=stopping_criteria if stopping_criteria else None,
                 use_cache=(self.device_type == "cuda"),
             )
         
@@ -331,7 +359,7 @@ class UniversalTrainer:
                 verbose=verbose
             )
         
-        return raw_translation, filtered_translation
+        return raw_translation, filtered_translation, gen_config_dict
     
     @weave.op()
     def test_generation(
@@ -340,7 +368,8 @@ class UniversalTrainer:
         test_dataset=None, 
         max_samples=None,
         use_quality_filter=True,
-        verbose_filter=False
+        verbose_filter=False,
+        generation_strategy=None
     ):
         """
         Enhanced test translation with comprehensive metrics and quality filtering
@@ -351,6 +380,8 @@ class UniversalTrainer:
             max_samples: Maximum samples to test
             use_quality_filter: Whether to apply quality filtering
             verbose_filter: Print filtering details for each sample
+            generation_strategy: Generation strategy to use (greedy, beam_search, sampling)
+                               If None, uses params.DEFAULT_GENERATION_STRATEGY
         """
         
         self.device = torch.device("cpu")
@@ -553,10 +584,15 @@ class UniversalTrainer:
         """
                 prompts.append(prompt)
             
+        # Set generation strategy
+        if generation_strategy is None:
+            generation_strategy = params.DEFAULT_GENERATION_STRATEGY
+        
         print("\n" + "="*80)
         print("COMPREHENSIVE TRANSLATION EVALUATION")
         if use_quality_filter:
             print("(WITH QUALITY FILTERING)")
+        print(f"Generation Strategy: {generation_strategy.upper()}")
         print("="*80)
         
         # Generate predictions and calculate metrics
@@ -566,17 +602,19 @@ class UniversalTrainer:
         filtering_data = []
         
         for i, (prompt, reference) in enumerate(zip(prompts, references)):
+            # Always show progress (not just when verbose_filter is True)
+            if i % 10 == 0 or i < 5:
+                print(f"[Progress] Processing sample {i+1}/{len(prompts)}...")
+            
             if verbose_filter:
                 print(f"\n{'='*60}")
                 print(f"Processing sample {i+1}/{len(prompts)}")
                 print(f"{'='*60}")
             
             # Generate translation with quality filtering
-            raw_translation, filtered_translation = self.generate_translation(
+            raw_translation, filtered_translation, gen_config_used = self.generate_translation(
                 prompt=prompt,
-                max_new_tokens=params.MAX_NEW_TOKENS,
-                temperature=0.8,
-                top_p=0.9,
+                generation_strategy=generation_strategy,
                 use_quality_filter=use_quality_filter,
                 verbose=verbose_filter
             )
@@ -685,6 +723,9 @@ class UniversalTrainer:
         
         if wandb.run is not None:  # Check if wandb is initialized
                 wandb.log({
+                    # Generation strategy
+                    "test/generation_strategy": generation_strategy,
+                    
                     # Main metrics
                     "test/bleu": metrics.get('bleu', 0),
                     "test/rouge1_f1": metrics.get('rouge1_f1', 0),
@@ -743,6 +784,8 @@ class UniversalTrainer:
                     })
             
         results = {
+            'generation_strategy': generation_strategy,
+            'generation_config': params.GENERATION_CONFIGS[generation_strategy],
             'raw_predictions': raw_predictions,
             'filtered_predictions': filtered_predictions,
             'references': references,
@@ -895,9 +938,11 @@ if __name__ == "__main__":
     opus_results = trainer.test_generation(
         adapter_path=adapter_path,
         test_dataset=test,
-        max_samples=20,  #SET TO NONE FOR FULL TESTSET
+        max_samples=None,  #SET TO NONE FOR FULL TESTSET
         use_quality_filter=True,
-        verbose_filter=False  # Set to True to see filtering details
+        verbose_filter=False,  # Set to True to see filtering details
+        generation_strategy=None  # Uses params.DEFAULT_GENERATION_STRATEGY ("greedy")
+                                  # Options: "greedy", "beam_search", "sampling"
     )
     
     # Evaluate on FLORES
