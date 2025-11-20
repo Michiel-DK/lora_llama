@@ -10,13 +10,14 @@ Logs to WandB under the same project/run as strategy comparison.
 import params
 import wandb
 import weave
+import torch
 from datetime import datetime
 from pt_app.trainer.trainer_pt import UniversalTrainer
 from pt_app.data.dataset import LanguageDS
 
 
 def test_baseline(
-    max_samples: int = 50,
+    max_samples: int = None,
     generation_strategy: str = "beam_search",
     run_name: str = None
 ):
@@ -24,7 +25,7 @@ def test_baseline(
     Test base model without any LoRA adapters.
     
     Args:
-        max_samples: Number of samples to test (default: 50 for speed)
+        max_samples: Number of samples to test (default: None for all samples)
         generation_strategy: Strategy to use (default: beam_search)
         run_name: Optional custom run name for WandB
     """
@@ -56,7 +57,10 @@ def test_baseline(
     print("="*80 + "\n")
     
     # Initialize trainer WITHOUT LoRA
+    # Force CPU to avoid MPS issues with baseline model
     trainer = UniversalTrainer()
+    trainer.device = torch.device("cpu")
+    trainer.device_type = "cpu"
     model, tokenizer = trainer.get_model(apply_lora=False)  # ← No LoRA!
     
     # Load test data
@@ -68,7 +72,7 @@ def test_baseline(
     
     print(f"[INFO] Test dataset size: {len(test)}")
     if max_samples:
-        print(f"[INFO] Limiting to {max_samples} samples for speed")
+        print(f"[INFO] Limiting to {max_samples} samples")
     
     # Test base model
     baseline_results = trainer.test_generation(
@@ -137,8 +141,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-samples",
         type=int,
-        default=50,
-        help="Maximum samples to test (default: 50, use 0 for all)"
+        default=None,
+        help="Maximum samples to test (default: None for all samples, use 0 for all)"
     )
     parser.add_argument(
         "--strategy",
@@ -158,7 +162,7 @@ if __name__ == "__main__":
     
     # Run baseline test
     results = test_baseline(
-        max_samples=args.max_samples if args.max_samples > 0 else None,
+        max_samples=args.max_samples if args.max_samples and args.max_samples > 0 else None,
         generation_strategy=args.strategy,
         run_name=args.run_name
     )

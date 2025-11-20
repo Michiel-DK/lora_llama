@@ -114,9 +114,6 @@ class LanguageDS:
         prompt_length = len(prompt_encoding)
         labels = [-100] * prompt_length + full_encoding[prompt_length:]
         
-        # ============================================================
-        # ✅ ADD THIS - Store original text for testing!
-        # ============================================================
         return {
             "input_ids": full_encoding,
             "labels": labels,
@@ -196,6 +193,30 @@ class LanguageDS:
             test_processed = [x for x in test_processed if x['input_ids']]
             
             return None, Dataset.from_list(val_processed), Dataset.from_list(test_processed)
+        
+        elif self.dataset == 'tatoeba':
+            """Load Tatoeba English-Portuguese dataset"""
+            print("Loading Tatoeba en-pt dataset...")
+            
+            # Load the properly hosted version
+            tatoeba_data = load_dataset(
+                "mteb/tatoeba-bitext-mining",
+                "por-eng",
+                split="test"
+            )
+            print(f"Loaded Tatoeba en-pt: {len(tatoeba_data)} samples")
+            
+            # Convert to standard translation format
+            def convert_format(example):
+                return {
+                    'translation': {
+                'en': example['sentence2'],  # ← English (second)
+                'pt': example['sentence1']   # ← Portuguese (first)
+                    }
+                }
+            
+            tatoeba_data = tatoeba_data.map(convert_format)
+            raw_dataset = tatoeba_data
                     
         else:
             raise ValueError(f"Unknown dataset: {self.dataset}")
@@ -298,7 +319,7 @@ if __name__ == "__main__":
     import ipdb; ipdb.set_trace()
         
         
-    ds = LanguageDS(tokenizer, dataset='opus100')
+    ds = LanguageDS(tokenizer, dataset='tatoeba')
     train, val, test = ds.create_datasets(save=False)
     
     print("\nFirst 3 samples:")
