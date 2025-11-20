@@ -156,6 +156,29 @@ class UniversalTrainer:
         else:
             self.run_name = f"{params.MODEL_NAME.split('/')[-1]}-{dataset_name}-{epochs}ep-{self.run_timestamp}"
         
+        # ✅ ADDED: Initialize WandB with matching name
+        if params.USE_WANDB:
+            wandb.init(
+                project=params.WANDB_PROJECT,
+                name=self.run_name,  # ← SAME as adapter save name!
+                tags=["training"],
+                config={
+                    "model": params.MODEL_NAME,
+                    "dataset": dataset_name,
+                    "dataset_samples": params.DATASET_SAMPLES,
+                    "epochs": epochs,
+                    "batch_size": self.batch_size,
+                    "learning_rate": params.OPTIMIZER_CONFIG["learning_rate"],
+                    "lora_r": params.LORA_CONFIG["r"],
+                    "lora_alpha": params.LORA_CONFIG["lora_alpha"],
+                    "timestamp": self.run_timestamp,
+                }
+            )
+        
+        print(f"\n{'='*80}")
+        print(f"TRAINING: {self.run_name}")
+        print(f"{'='*80}\n")
+        
         # Create dataloader
         dataloader = DataLoader(
             train_dataset,
@@ -205,31 +228,48 @@ class UniversalTrainer:
             avg_loss = np.mean(epoch_losses)
             print(f"Epoch {epoch+1} - Average Loss: {avg_loss:.4f}")
             
-            wandb.log({
-                "epoch": epoch + 1,
-                "train_loss": avg_loss,
-            })
+            if params.USE_WANDB:
+                wandb.log({
+                    "epoch": epoch + 1,
+                    "train_loss": avg_loss,
+                })
             
             if val_dataset:
                 val_loss = self._validate(val_dataset)
                 print(f"Validation Loss: {val_loss:.4f}")
-                wandb.log({"val_loss": val_loss, "epoch": epoch + 1})
+                
+                if params.USE_WANDB:
+                    wandb.log({"val_loss": val_loss, "epoch": epoch + 1})
                 
                 should_stop, best_path = self._check_early_stopping(val_loss, epoch)
                 
                 if should_stop:
+                    print(f"🛑 Early stopping triggered!")
                     print(f"Returning best model: {best_path}")
-                    return best_path
                     
-        # Save model
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        save_path = os.path.join(self.adapter_path, f"{timestamp}_final")
-        self.model.save_pretrained(save_path)
-        print(f"[INFO] Model saved to {save_path}")
+                    if params.USE_WANDB:
+                        wandb.log({"final_model_path": best_path})
+                    
+                    return best_path
         
-        wandb.log({'model_saved_path': save_path})
+        # ✅ CHANGED: Save final model with consistent naming
+        final_adapter_path = f"{self.adapter_path}{self.run_name}_final"
+        self.model.save_pretrained(final_adapter_path)
+        print(f"[INFO] Model saved to {final_adapter_path}")
         
-        return save_path
+        if params.USE_WANDB:
+            wandb.log({'model_saved_path': final_adapter_path})
+            
+            # Save model as artifact
+            artifact = wandb.Artifact(
+                name=f"adapter-{self.run_name}",
+                type="model",
+                description=f"LoRA adapter trained on {params.DATASET}"
+            )
+            artifact.add_dir(final_adapter_path)
+            wandb.log_artifact(artifact)
+        
+        return final_adapter_path
     
     def _check_early_stopping(self, current_val_loss, epoch):
         """
@@ -241,20 +281,27 @@ class UniversalTrainer:
             self.patience_counter = 0
             self.best_adapter_path = None
         
-        patience = 3
-        min_delta = 0.01
+        patience = getattr(params, 'EARLY_STOPPING_PATIENCE', 3)
+        min_delta = getattr(params, 'EARLY_STOPPING_MIN_DELTA', 0.01)
         
         if current_val_loss < (self.best_val_loss - min_delta):
             # Improvement
             self.best_val_loss = current_val_loss
             self.patience_counter = 0
             
-            # Save best model
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.best_adapter_path = f"./adapters/{timestamp}_best_ep{epoch+1}"
+            # ✅ CHANGED: Save best model with consistent naming
+            self.best_adapter_path = f"{self.adapter_path}{self.run_name}_best_ep{epoch+1}"
             self.model.save_pretrained(self.best_adapter_path)
             
             print(f"✅ New best model! Val loss: {current_val_loss:.4f}")
+            
+            if params.USE_WANDB:
+                wandb.log({
+                    "best_val_loss": current_val_loss,
+                    "best_epoch": epoch + 1,
+                    "best_model_path": self.best_adapter_path
+                })
+            
             return False, self.best_adapter_path
         else:
             # No improvement
@@ -262,7 +309,6 @@ class UniversalTrainer:
             print(f"⚠️  Patience: {self.patience_counter}/{patience}")
             
             if self.patience_counter >= patience:
-                print("🛑 Early stopping triggered!")
                 return True, self.best_adapter_path
             
             return False, None
@@ -872,27 +918,9 @@ class UniversalTrainer:
 if __name__ == "__main__":
     from pt_app.data.dataset import LanguageDS
     
-    
     # Initialize tracking BEFORE creating trainer
     weave.init(params.PROJECT_NAME)
 
-    wandb.init(
-        project=params.PROJECT_NAME,
-        name=f"{params.MODEL_NAME}-{params.DATASET}-{params.DATASET_SAMPLES}-{params.EPOCHS}ep-{datetime.now().strftime('%Y%m%d_%H%M')}",
-        tags=["baseline"],
-        config={
-            "model": params.MODEL_NAME,
-            "dataset": params.DATASET,
-            'n_samples': params.DATASET_SAMPLES,
-            "max_seq_length": params.MAX_SEQ_LENGTH,
-            "max_new_tokens": params.MAX_NEW_TOKENS,
-            "batch_size": params.BATCH_SIZE,  # Will be set by trainer
-            "epochs": params.EPOCHS,
-            "lora_r": params.LORA_CONFIG["r"],
-            "lora_alpha": params.LORA_CONFIG["lora_alpha"],
-        }
-    )
-    
     # Initialize trainer
     trainer = UniversalTrainer()
     
@@ -940,27 +968,24 @@ if __name__ == "__main__":
     print("="*80 + "\n")
 
     print(f"[INFO] Dataset sizes - Train: {len(train)}, Val: {len(val) if val else 0}, OPUS Test: {len(test) if test else 0}")
-    # Train
+    
+    # Train (WandB will be initialized inside train())
     adapter_path = trainer.train(train, val)
     
-    # Test with quality filtering enabled (RECOMMENDED)
+    # Test with quality filtering enabled
     print("\n" + "="*80)
     print("TESTING WITH QUALITY FILTERING ENABLED")
     print("="*80)
     opus_results = trainer.test_generation(
         adapter_path=adapter_path,
         test_dataset=test,
-        max_samples=None,  #SET TO NONE FOR FULL TESTSET
+        max_samples=None,
         use_quality_filter=True,
-        verbose_filter=False,  # Set to True to see filtering details
-        generation_strategy=None  # Uses params.DEFAULT_GENERATION_STRATEGY ("greedy")
-                                  # Options: "greedy", "beam_search", "sampling"
+        verbose_filter=False,
+        generation_strategy=params.DEFAULT_GENERATION_STRATEGY
     )
     
-    
-    wandb.finish()
-    
-    # Summary comparison
+    # Summary
     print("\n" + "="*80)
     print("FINAL SUMMARY")
     print("="*80)
@@ -976,3 +1001,6 @@ if __name__ == "__main__":
         print(f"  Repetitions Cleaned: {opus_results['filter_stats']['repetitions']}")
         print(f"  Language Mixing Fixed: {opus_results['filter_stats']['language_mixing']}")
     
+    # ✅ ADDED: Finish wandb
+    if params.USE_WANDB:
+        wandb.finish()
