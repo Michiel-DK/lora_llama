@@ -55,6 +55,8 @@ class UniversalTrainer:
         self.model_name = params.MODEL_NAME
         self.adapter_path = params.ADAPTER_PATH
         self.max_seq_length = params.MAX_SEQ_LENGTH
+        self.run_timestamp = params.RUN_TIMESTAMP
+        self.run_name = None  
         
         # Auto-detect device
         if torch.cuda.is_available():
@@ -143,9 +145,16 @@ class UniversalTrainer:
         
         return self.model, self.tokenizer
     
-    def train(self, train_dataset, val_dataset=None, epochs=None):
+    def train(self, train_dataset, val_dataset=None, epochs=None, save_name=None):
         """Simple manual training loop - works everywhere"""
         epochs = epochs or params.EPOCHS
+        
+        # Create run name with timestamp
+        dataset_name = params.DATASET
+        if save_name:
+            self.run_name = f"{save_name}_{self.run_timestamp}"
+        else:
+            self.run_name = f"{params.MODEL_NAME.split('/')[-1]}-{dataset_name}-{epochs}ep-{self.run_timestamp}"
         
         # Create dataloader
         dataloader = DataLoader(
@@ -411,6 +420,9 @@ class UniversalTrainer:
                     tokenizer=self.tokenizer,
                     target_language='pt'
                 )
+        else:
+            # For baseline model, ensure it's on the correct device (CPU)
+            self.model = self.model.to(self.device)
         
         self.model.eval()
         
@@ -945,53 +957,13 @@ if __name__ == "__main__":
                                   # Options: "greedy", "beam_search", "sampling"
     )
     
-    # Evaluate on FLORES
-    # flores_loader = LanguageDS(tokenizer=tokenizer, dataset="flores")
-    # _, flores_val, flores_test = flores_loader.create_datasets(save=True)
-
-    # flores_results = trainer.test_generation(
-    #     adapter_path=adapter_path,
-    #     test_dataset=flores_test,  #SET TO NONE FOR FULL TESTSET
-    #     max_samples=20,  #SET TO NONE FOR FULL TESTSET
-    #     use_quality_filter=True,
-    #     verbose_filter=False  # Set to True to see filtering details
-    # )
-    
-    # # Log to WandB
-    # wandb.log({
-    #     "opus_bleu": opus_results['metrics']['bleu'],
-    #     "flores_bleu": flores_results['metrics']['bleu'],
-    #     "domain_transfer": flores_results['metrics']['bleu'] / opus_results['metrics']['bleu']
-    # })
-    
-    # print(f"\n{'='*80}")
-    # print(f"OPUS BLEU:   {opus_results['metrics']['bleu']:.2f}")
-    # print(f"FLORES BLEU: {flores_results['metrics']['bleu']:.2f}")
-    # print(f"Transfer:    {flores_results['metrics']['bleu'] / opus_results['metrics']['bleu'] * 100:.1f}%")
-    # print(f"{'='*80}")
-    
     
     wandb.finish()
-    
-    # Optionally test without filtering for comparison
-    # print("\n" + "="*80)
-    # print("TESTING WITHOUT QUALITY FILTERING (for comparison)")
-    # print("="*80)
-    # results_raw = trainer.test_generation(
-    #     adapter_path=adapter_path,
-    #     test_dataset=test,
-    #     max_samples=30,
-    #     use_quality_filter=False
-    # )
     
     # Summary comparison
     print("\n" + "="*80)
     print("FINAL SUMMARY")
     print("="*80)
-    # print("\nWithout Quality Filter:")
-    # print(f"  BLEU Score: {results_raw['metrics'].get('bleu', 0):.2f}")
-    # print(f"  Average Perplexity: {results_raw['avg_perplexity']:.2f}")
-    # print(f"  ROUGE-L F1: {results_raw['metrics'].get('rougeL_f1', 0):.4f}")
     
     print("\nWith Quality Filter:")
     print(f"  BLEU Score: {opus_results['metrics'].get('bleu', 0):.2f}")
@@ -1004,11 +976,3 @@ if __name__ == "__main__":
         print(f"  Repetitions Cleaned: {opus_results['filter_stats']['repetitions']}")
         print(f"  Language Mixing Fixed: {opus_results['filter_stats']['language_mixing']}")
     
-    # Calculate improvements
-    # bleu_improvement = results_filtered['metrics'].get('bleu', 0) - results_raw['metrics'].get('bleu', 0)
-    # rouge_improvement = results_filtered['metrics'].get('rougeL_f1', 0) - results_raw['metrics'].get('rougeL_f1', 0)
-    
-    # print(f"\nOverall Improvements:")
-    # print(f"  BLEU: {bleu_improvement:+.2f} points")
-    # print(f"  ROUGE-L: {rouge_improvement:+.4f} points")
-    # print("="*80)

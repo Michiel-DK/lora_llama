@@ -1,5 +1,7 @@
 # params.py (HuggingFace compatible)
 import os
+from datetime import datetime
+
 
 HF_TOKEN = os.getenv('HUGGINGFACE_HUB_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
@@ -17,6 +19,9 @@ ADAPTER_PATH = "./adapters/"
 OUTPUT_DIR = "./outputs/"
 CACHE_DIR = "./cache/"
 
+RUN_TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
 # Data Configuration
 MAX_SEQ_LENGTH = 512
 
@@ -25,7 +30,7 @@ MIN_WORDS = 5
 
 DATASET_SAMPLES = 2000
 
-DATASET = 'opus_books' 
+DATASET = 'tatoeba' 
 
 # config.py or params.py
 

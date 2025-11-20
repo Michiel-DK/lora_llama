@@ -217,9 +217,35 @@ class LanguageDS:
             
             tatoeba_data = tatoeba_data.map(convert_format)
             raw_dataset = tatoeba_data
+            
+        elif self.dataset == 'opensubtitles':
+            """Load OpenSubtitles (moses format - simplest!)"""
+            
+            cache_dir = "datasets/opensubtitles"
+            en_file = f"{cache_dir}/OpenSubtitles.en-pt.en"
+            pt_file = f"{cache_dir}/OpenSubtitles.en-pt.pt"
+            
+            print("Loading OpenSubtitles...")
+            data_list = []
+            
+            with open(en_file, 'r', encoding='utf-8') as f_en, \
+                open(pt_file, 'r', encoding='utf-8') as f_pt:
+                
+                for en_line, pt_line in zip(f_en, f_pt):
+                    en_line = en_line.strip()
+                    pt_line = pt_line.strip()
                     
-        else:
-            raise ValueError(f"Unknown dataset: {self.dataset}")
+                    if en_line and pt_line:
+                        data_list.append({
+                            'translation': {'en': en_line, 'pt': pt_line}
+                        })
+                    
+                    if DATASET_SAMPLES and len(data_list) >= DATASET_SAMPLES:
+                        break
+            
+            raw_dataset = Dataset.from_list(data_list)
+            print(f"✅ Loaded {len(raw_dataset)} samples")
+            print(f"Sample: {raw_dataset[0]}")
         
         # Limit samples if specified
         if DATASET_SAMPLES and DATASET_SAMPLES < len(raw_dataset):
@@ -316,10 +342,9 @@ if __name__ == "__main__":
     #     print(text)
         
         
-    import ipdb; ipdb.set_trace()
         
         
-    ds = LanguageDS(tokenizer, dataset='tatoeba')
+    ds = LanguageDS(tokenizer, dataset='opensubtitles')
     train, val, test = ds.create_datasets(save=False)
     
     print("\nFirst 3 samples:")

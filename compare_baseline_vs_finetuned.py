@@ -11,6 +11,7 @@ Shows the improvement from fine-tuning.
 import params
 import wandb
 import weave
+import torch
 from datetime import datetime
 
 from pt_app.trainer.trainer_pt import UniversalTrainer
@@ -41,6 +42,8 @@ def compare_baseline_vs_finetuned(
             "adapter_path": adapter_path,
             "max_samples": max_samples,
             "generation_strategy": generation_strategy,
+            "dataset": params.DATASET,
+            "model": params.MODEL_NAME,
         }
     )
     
@@ -58,6 +61,9 @@ def compare_baseline_vs_finetuned(
     print("="*80)
     
     trainer_baseline = UniversalTrainer()
+    # Force CPU to avoid MPS issues with baseline model
+    trainer_baseline.device = torch.device("cpu")
+    trainer_baseline.device_type = "cpu"
     model, tokenizer = trainer_baseline.get_model(apply_lora=False)  # ← Load WITHOUT LoRA
     
     # Load test dataset
@@ -80,16 +86,6 @@ def compare_baseline_vs_finetuned(
         generation_strategy=generation_strategy
     )
     
-    # Log baseline metrics
-    wandb.log({
-        "baseline/bleu": baseline_results['metrics'].get('bleu', 0),
-        "baseline/rouge1": baseline_results['metrics'].get('rouge1_f1', 0),
-        "baseline/rouge2": baseline_results['metrics'].get('rouge2_f1', 0),
-        "baseline/rougeL": baseline_results['metrics'].get('rougeL_f1', 0),
-        "baseline/perplexity": baseline_results['avg_perplexity'],
-        "baseline/filter_pass_rate": baseline_results['filter_stats']['pass_rate'] if baseline_results['filter_stats'] else 1.0,
-    })
-    
     # ============================================================================
     # STEP 2: Test FINE-TUNED MODEL (with adapters)
     # ============================================================================
@@ -108,16 +104,6 @@ def compare_baseline_vs_finetuned(
         verbose_filter=False,
         generation_strategy=generation_strategy
     )
-    
-    # Log fine-tuned metrics
-    wandb.log({
-        "finetuned/bleu": finetuned_results['metrics'].get('bleu', 0),
-        "finetuned/rouge1": finetuned_results['metrics'].get('rouge1_f1', 0),
-        "finetuned/rouge2": finetuned_results['metrics'].get('rouge2_f1', 0),
-        "finetuned/rougeL": finetuned_results['metrics'].get('rougeL_f1', 0),
-        "finetuned/perplexity": finetuned_results['avg_perplexity'],
-        "finetuned/filter_pass_rate": finetuned_results['filter_stats']['pass_rate'] if finetuned_results['filter_stats'] else 1.0,
-    })
     
     # ============================================================================
     # STEP 3: Calculate Improvements
@@ -169,7 +155,11 @@ def compare_baseline_vs_finetuned(
         ]
     )
     
-    wandb.log({"comparison_table": comparison_table})
+    # Log only the comparison table (no individual metrics)
+    wandb.log({
+        "comparison_summary": comparison_table,
+        "samples_tested": len(test_dataset) if max_samples is None else min(max_samples, len(test_dataset))
+    })
     
     # Print comparison
     print("\nMetric Comparison:")
@@ -182,16 +172,6 @@ def compare_baseline_vs_finetuned(
     print(f"{'Improvement':<15} {bleu_improvement:>+8.2f} {rouge_improvement:>+10.4f} {perplexity_improvement:>+12.2f}")
     print(f"{'(Percentage)':<15} {bleu_improvement_pct:>+7.1f}% {rouge_improvement_pct:>+9.1f}% {perplexity_improvement_pct:>+11.1f}%")
     print("-" * 80)
-    
-    # Log improvements
-    wandb.log({
-        "improvement/bleu_absolute": bleu_improvement,
-        "improvement/bleu_percentage": bleu_improvement_pct,
-        "improvement/rouge_absolute": rouge_improvement,
-        "improvement/rouge_percentage": rouge_improvement_pct,
-        "improvement/perplexity_absolute": perplexity_improvement,
-        "improvement/perplexity_percentage": perplexity_improvement_pct,
-    })
     
     print("\n" + "="*80)
     if bleu_improvement > 0:
