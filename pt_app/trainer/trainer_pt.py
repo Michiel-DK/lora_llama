@@ -163,14 +163,28 @@ class UniversalTrainer:
                 name=self.run_name,  # ← SAME as adapter save name!
                 tags=["training"],
                 config={
-                    "model": params.MODEL_NAME,
-                    "dataset": dataset_name,
-                    "dataset_samples": params.DATASET_SAMPLES,
-                    "epochs": epochs,
-                    "batch_size": self.batch_size,
-                    "learning_rate": params.OPTIMIZER_CONFIG["learning_rate"],
-                    "lora_r": params.LORA_CONFIG["r"],
-                    "lora_alpha": params.LORA_CONFIG["lora_alpha"],
+                    # Model configuration
+                    "model/name": params.MODEL_NAME,
+                    "model/lora_r": params.LORA_CONFIG["r"],
+                    "model/lora_alpha": params.LORA_CONFIG["lora_alpha"],
+                    "model/lora_dropout": params.LORA_CONFIG["lora_dropout"],
+                    
+                    # Dataset configuration
+                    "dataset/name": dataset_name,
+                    "dataset/samples_requested": params.DATASET_SAMPLES,
+                    "dataset/samples_actual": len(train_dataset),  # ← Actual samples after filtering
+                    "dataset/min_words": params.MIN_WORDS,
+                    "dataset/min_total_tokens": params.MIN_TOTAL_TOKENS,
+                    "dataset/max_total_tokens": params.MAX_TOTAL_TOKENS,
+                    
+                    # Training configuration
+                    "training/epochs": epochs,
+                    "training/batch_size": self.batch_size,
+                    "training/learning_rate": params.OPTIMIZER_CONFIG["learning_rate"],
+                    "training/weight_decay": params.OPTIMIZER_CONFIG["weight_decay"],
+                    "training/gradient_accumulation_steps": params.GRADIENT_ACCUMULATION_STEPS,
+                    
+                    # Metadata
                     "timestamp": self.run_timestamp,
                 }
             )

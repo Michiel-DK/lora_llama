@@ -24,16 +24,19 @@ MAX_SEQ_LENGTH = 512
 MAX_NEW_TOKENS = 150
 MIN_WORDS = 5
 
+MIN_TOTAL_TOKENS = 7
+MAX_TOTAL_TOKENS = 512
+
 # ============================================================================
 # DATASET CONFIGURATION - ⚠️ UPDATED!
 # ============================================================================
-# Options: 'opus_books', 'opensubtitles', 'opus100', 'wikimatrix', 'ccmatrix'
-DATASET = 'opus_books'  # ← CHANGED from 'tatoeba'!
+# Options: 'opus_books', 'opensubtitles', 'opus100', 'tatoeba'
+DATASET = 'opensubtitles'  # ← CHANGED from 'tatoeba'!
 
 # Sweet spot: 500 samples (gave BLEU 34 vs 1404 → BLEU 30)
 # Use 500-1000 for best results
-DATASET_SAMPLES = 500  # ← CHANGED from 2000!
-EPOCHS = 5
+DATASET_SAMPLES = 5000  # ← CHANGED from 2000!
+EPOCHS = 10
 
 # ============================================================================
 # MODEL SIZE SPECIFIC SETTINGS
@@ -42,13 +45,13 @@ if "1B" in MODEL_NAME:
     BATCH_SIZE = 2
     GRADIENT_ACCUMULATION_STEPS = 1
     LORA_RANK = 16
-    LORA_DROPOUT = 0.05  # Lower for smaller model
+    LORA_DROPOUT = 0.1
     
 elif "3B" in MODEL_NAME:
     BATCH_SIZE = 4
     GRADIENT_ACCUMULATION_STEPS = 4
     LORA_RANK = 16
-    LORA_DROPOUT = 0.05
+    LORA_DROPOUT = 0.1
     
 else:  # 8B+
     BATCH_SIZE = 1
@@ -74,7 +77,7 @@ LORA_CONFIG = {
 
 # Optimizer Configuration
 OPTIMIZER_CONFIG = {
-    "learning_rate": 2e-4,  # ← CHANGED from 1e-4 (faster convergence)
+    "learning_rate": 1e-4,  # ← CHANGED from 1e-4 (faster convergence)
     "weight_decay": 0.01,
     "adam_beta1": 0.9,
     "adam_beta2": 0.999,
@@ -145,7 +148,7 @@ DEFAULT_GENERATION_STRATEGY = "beam_search"  # ← CHANGED from "greedy"
 
 # Early stopping configuration
 EARLY_STOPPING_PATIENCE = 3
-EARLY_STOPPING_MIN_DELTA = 0.01
+EARLY_STOPPING_MIN_DELTA = 0.005
 
 # WandB configuration
 USE_WANDB = True

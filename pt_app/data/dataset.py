@@ -104,9 +104,6 @@ class LanguageDS:
         )
         
         # Check total length
-        MIN_TOTAL_TOKENS = 30
-        MAX_TOTAL_TOKENS = 512
-        
         if len(full_encoding) < MIN_TOTAL_TOKENS or len(full_encoding) > MAX_TOTAL_TOKENS:
             return {"input_ids": None, "labels": None, "source_text": None, "target_text": None}
         
@@ -340,10 +337,7 @@ if __name__ == "__main__":
     #     print(f"Sample {i+1}:")
     #     print(f"{'='*60}")
     #     print(text)
-        
-        
-        
-        
+            
     ds = LanguageDS(tokenizer, dataset='opensubtitles')
     train, val, test = ds.create_datasets(save=False)
     
