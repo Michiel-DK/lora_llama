@@ -243,6 +243,41 @@ class LanguageDS:
             raw_dataset = Dataset.from_list(data_list)
             print(f"✅ Loaded {len(raw_dataset)} samples")
             print(f"Sample: {raw_dataset[0]}")
+            
+        # Create a hash for each sample based on source text
+        def get_sample_hash(example):
+            """Create unique hash from source text"""
+            if 'translation' in example:
+                source = example['translation']['en']
+            elif 'source_text' in example:
+                source = example['source_text']
+            else:
+                # Extract from formatted text if needed
+                source = example.get('text', str(example))
+            
+            # Normalize: lowercase, strip whitespace
+            source_normalized = source.lower().strip()
+            return hash(source_normalized)
+        
+        # Get unique samples
+        original_size = len(raw_dataset)
+        seen_hashes = set()
+        unique_indices = []
+        
+        for idx in range(len(raw_dataset)):
+            sample_hash = get_sample_hash(raw_dataset[idx])
+            if sample_hash not in seen_hashes:
+                seen_hashes.add(sample_hash)
+                unique_indices.append(idx)
+        
+        # Select only unique samples
+        raw_dataset = raw_dataset.select(unique_indices)
+        
+        duplicates_removed = original_size - len(raw_dataset)
+        print(f"Original size: {original_size}")
+        print(f"Duplicates removed: {duplicates_removed}")
+        print(f"Unique samples: {len(raw_dataset)}")
+        print("="*80 + "\n")
         
         # Limit samples if specified
         if DATASET_SAMPLES and DATASET_SAMPLES < len(raw_dataset):

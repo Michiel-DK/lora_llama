@@ -35,8 +35,8 @@ DATASET = 'opensubtitles'  # ← CHANGED from 'tatoeba'!
 
 # Sweet spot: 500 samples (gave BLEU 34 vs 1404 → BLEU 30)
 # Use 500-1000 for best results
-DATASET_SAMPLES = 5000  # ← CHANGED from 2000!
-EPOCHS = 10
+DATASET_SAMPLES = 300  # ← CHANGED from 2000!
+EPOCHS = 1
 
 # ============================================================================
 # MODEL SIZE SPECIFIC SETTINGS

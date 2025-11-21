@@ -561,22 +561,30 @@ class UniversalTrainer:
             metrics = {}
             
             # ROUGE scores
-            if ROUGE_AVAILABLE and rouge_scorer_obj:
-                rouge_scores = defaultdict(list)
-                for pred, ref in zip(predictions, references):
-                    scores = rouge_scorer_obj.score(ref, pred)
-                    for metric, score in scores.items():
-                        rouge_scores[f"{metric}_f1"].append(score.fmeasure)
-                
-                for metric, scores in rouge_scores.items():
-                    metrics[metric] = np.mean(scores)
+            try:
+                if ROUGE_AVAILABLE and rouge_scorer_obj:
+                    rouge_scores = defaultdict(list)
+                    for pred, ref in zip(predictions, references):
+                        scores = rouge_scorer_obj.score(ref, pred)
+                        for metric, score in scores.items():
+                            rouge_scores[f"{metric}_f1"].append(score.fmeasure)
+                    
+                    for metric, scores in rouge_scores.items():
+                        metrics[metric] = np.mean(scores)
+            except Exception as e:
+                print(f"⚠️  ROUGE calculation failed: {e}")
+                import ipdb; ipdb.set_trace()
             
             # BLEU scores
-            if BLEU_AVAILABLE:
-                refs_formatted = [[ref] for ref in references]
-                bleu_score = sacrebleu.corpus_bleu(predictions, refs_formatted)
-                metrics['bleu'] = bleu_score.score
-                metrics['bleu_precisions'] = bleu_score.precisions
+            try:
+                if BLEU_AVAILABLE:
+                    refs_formatted = [[ref] for ref in references]
+                    bleu_score = sacrebleu.corpus_bleu(predictions, refs_formatted)
+                    metrics['bleu'] = bleu_score.score
+                    metrics['bleu_precisions'] = bleu_score.precisions
+            except Exception as e:
+                print(f"⚠️  BLEU calculation failed: {e}")
+                import ipdb; ipdb.set_trace()
             
             return metrics
         
@@ -777,6 +785,43 @@ class UniversalTrainer:
                 if 'bleu_precisions' in metrics:
                     print(f"  Precisions: {[f'{p:.2f}' for p in metrics['bleu_precisions']]}")
         
+        #### CHECK FOR BLEU
+        
+        # After calculating metrics, add this:
+        if BLEU_AVAILABLE:
+            try:
+                print("\n" + "="*80)
+                print("BLEU CALCULATION DEBUG")
+                print("="*80)
+
+                print("\nFirst 10 samples:")
+                for i in range(min(10, len(filtered_predictions))):
+                    pred = filtered_predictions[i]
+                    ref = references[i]
+                    
+                    # Individual BLEU
+                    sent_bleu = sacrebleu.sentence_bleu(pred, [ref])
+                    
+                    print(f"\n{i+1}. Pred: {pred[:80]}...")
+                    print(f"   Ref:  {ref[:80]}...")
+                    print(f"   BLEU: {sent_bleu.score:.2f}")
+                    print(f"   Exact match: {'✅' if pred.strip() == ref.strip() else '❌'}")
+
+                # Check if all predictions are somehow identical to references
+                exact_matches = sum(1 for p, r in zip(filtered_predictions, references) if p.strip() == r.strip())
+                print(f"\nExact matches: {exact_matches}/{len(filtered_predictions)} ({exact_matches/len(filtered_predictions)*100:.1f}%)")
+
+                # Recalculate BLEU manually
+                corpus_bleu = sacrebleu.corpus_bleu(filtered_predictions, [[r] for r in references])
+                print(f"\nRecalculated corpus BLEU: {corpus_bleu.score:.2f}")
+                print(f"Precisions: {corpus_bleu.precisions}")
+                print("="*80)
+            except Exception as e:
+                print(f"⚠️  BLEU debug section failed: {e}")
+                import ipdb; ipdb.set_trace()
+        
+        #######
+        
         # Compare raw vs filtered metrics if filtering was used
         if use_quality_filter:
             raw_metrics = calculate_metrics(raw_predictions, references)
@@ -947,6 +992,38 @@ if __name__ == "__main__":
         tokenizer=tokenizer,
         dataset=params.DATASET,
     ).create_datasets(save=True)
+    
+    # After loading datasets
+    print("\n" + "="*80)
+    print("CHECKING FOR DATA LEAKAGE")
+    print("="*80)
+
+    # Get source texts
+    def get_source_text(item):
+        if 'source_text' in item:
+            return item['source_text']
+        # Extract from input_ids
+        input_ids = item['input_ids']
+        labels = item['labels']
+        label_start = next(i for i, l in enumerate(labels) if l != -100)
+        source_ids = input_ids[:label_start]
+        return tokenizer.decode(source_ids, skip_special_tokens=True)
+
+    train_sources = set([get_source_text(train[i]) for i in range(len(train))])
+    test_sources = set([get_source_text(test[i]) for i in range(len(test))])
+
+    overlap = train_sources & test_sources
+    print(f"Train samples: {len(train_sources)}")
+    print(f"Test samples: {len(test_sources)}")
+    print(f"⚠️  OVERLAP: {len(overlap)} samples!")
+
+    if len(overlap) > 0:
+        print("\nFirst 5 overlapping samples:")
+        for i, text in enumerate(list(overlap)[:5]):
+            print(f"  {i+1}. {text[:100]}...")
+    print("="*80 + "\n")
+    
+    import ipdb;ipdb.set_trace()
         
     print("\n" + "="*80)
     print("VERIFYING TRAINING DATA QUALITY")

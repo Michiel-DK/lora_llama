@@ -32,19 +32,19 @@ def evaluate_translation(model, tokenizer, source, translation, reference=None):
     if reference:
         prompt = f"""Evaluate this English to Portuguese translation.
 
-Source: {source}
-Translation: {translation}
-Reference: {reference}
+            Source: {source}
+            Translation: {translation}
+            Reference: {reference}
 
-Provide a score (0-10) and detailed feedback."""
+            Provide a score (0-10) and detailed feedback."""
     else:
         prompt = f"""Evaluate this English to Portuguese translation.
 
-Source: {source}
-Translation: {translation}
+            Source: {source}
+            Translation: {translation}
 
-Provide a score (0-10) and detailed feedback."""
-    
+            Provide a score (0-10) and detailed feedback."""
+                
     messages = [
         {"role": "user", "content": prompt}
     ]
