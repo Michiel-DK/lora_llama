@@ -155,4 +155,4 @@ USE_WANDB = True
 WANDB_PROJECT = PROJECT_NAME
 
 #### JUDGE DATA FORMATTING AND SPLITTING ####
-JUDGE_DATA_FILE = os.path.join(os.path.dirname(__file__),'datasets', 'judge_eval', 'judge_training_data.json')
+JUDGE_DATA_FILE = os.path.join(os.path.dirname(__file__),'datasets', 'judge_eval', 'judge_training_data_merged4.json')
