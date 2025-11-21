@@ -104,9 +104,6 @@ class LanguageDS:
         )
         
         # Check total length
-        MIN_TOTAL_TOKENS = 30
-        MAX_TOTAL_TOKENS = 512
-        
         if len(full_encoding) < MIN_TOTAL_TOKENS or len(full_encoding) > MAX_TOTAL_TOKENS:
             return {"input_ids": None, "labels": None, "source_text": None, "target_text": None}
         
@@ -114,9 +111,6 @@ class LanguageDS:
         prompt_length = len(prompt_encoding)
         labels = [-100] * prompt_length + full_encoding[prompt_length:]
         
-        # ============================================================
-        # ✅ ADD THIS - Store original text for testing!
-        # ============================================================
         return {
             "input_ids": full_encoding,
             "labels": labels,
@@ -196,9 +190,94 @@ class LanguageDS:
             test_processed = [x for x in test_processed if x['input_ids']]
             
             return None, Dataset.from_list(val_processed), Dataset.from_list(test_processed)
+        
+        elif self.dataset == 'tatoeba':
+            """Load Tatoeba English-Portuguese dataset"""
+            print("Loading Tatoeba en-pt dataset...")
+            
+            # Load the properly hosted version
+            tatoeba_data = load_dataset(
+                "mteb/tatoeba-bitext-mining",
+                "por-eng",
+                split="test"
+            )
+            print(f"Loaded Tatoeba en-pt: {len(tatoeba_data)} samples")
+            
+            # Convert to standard translation format
+            def convert_format(example):
+                return {
+                    'translation': {
+                'en': example['sentence2'],  # ← English (second)
+                'pt': example['sentence1']   # ← Portuguese (first)
+                    }
+                }
+            
+            tatoeba_data = tatoeba_data.map(convert_format)
+            raw_dataset = tatoeba_data
+            
+        elif self.dataset == 'opensubtitles':
+            """Load OpenSubtitles (moses format - simplest!)"""
+            
+            cache_dir = "datasets/opensubtitles"
+            en_file = f"{cache_dir}/OpenSubtitles.en-pt.en"
+            pt_file = f"{cache_dir}/OpenSubtitles.en-pt.pt"
+            
+            print("Loading OpenSubtitles...")
+            data_list = []
+            
+            with open(en_file, 'r', encoding='utf-8') as f_en, \
+                open(pt_file, 'r', encoding='utf-8') as f_pt:
+                
+                for en_line, pt_line in zip(f_en, f_pt):
+                    en_line = en_line.strip()
+                    pt_line = pt_line.strip()
                     
-        else:
-            raise ValueError(f"Unknown dataset: {self.dataset}")
+                    if en_line and pt_line:
+                        data_list.append({
+                            'translation': {'en': en_line, 'pt': pt_line}
+                        })
+                    
+                    if DATASET_SAMPLES and len(data_list) >= DATASET_SAMPLES:
+                        break
+            
+            raw_dataset = Dataset.from_list(data_list)
+            print(f"✅ Loaded {len(raw_dataset)} samples")
+            print(f"Sample: {raw_dataset[0]}")
+            
+        # Create a hash for each sample based on source text
+        def get_sample_hash(example):
+            """Create unique hash from source text"""
+            if 'translation' in example:
+                source = example['translation']['en']
+            elif 'source_text' in example:
+                source = example['source_text']
+            else:
+                # Extract from formatted text if needed
+                source = example.get('text', str(example))
+            
+            # Normalize: lowercase, strip whitespace
+            source_normalized = source.lower().strip()
+            return hash(source_normalized)
+        
+        # Get unique samples
+        original_size = len(raw_dataset)
+        seen_hashes = set()
+        unique_indices = []
+        
+        for idx in range(len(raw_dataset)):
+            sample_hash = get_sample_hash(raw_dataset[idx])
+            if sample_hash not in seen_hashes:
+                seen_hashes.add(sample_hash)
+                unique_indices.append(idx)
+        
+        # Select only unique samples
+        raw_dataset = raw_dataset.select(unique_indices)
+        
+        duplicates_removed = original_size - len(raw_dataset)
+        print(f"Original size: {original_size}")
+        print(f"Duplicates removed: {duplicates_removed}")
+        print(f"Unique samples: {len(raw_dataset)}")
+        print("="*80 + "\n")
         
         # Limit samples if specified
         if DATASET_SAMPLES and DATASET_SAMPLES < len(raw_dataset):
@@ -293,12 +372,8 @@ if __name__ == "__main__":
     #     print(f"Sample {i+1}:")
     #     print(f"{'='*60}")
     #     print(text)
-        
-        
-    import ipdb; ipdb.set_trace()
-        
-        
-    ds = LanguageDS(tokenizer, dataset='opus100')
+            
+    ds = LanguageDS(tokenizer, dataset='opensubtitles')
     train, val, test = ds.create_datasets(save=False)
     
     print("\nFirst 3 samples:")

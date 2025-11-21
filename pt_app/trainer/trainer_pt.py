@@ -55,6 +55,8 @@ class UniversalTrainer:
         self.model_name = params.MODEL_NAME
         self.adapter_path = params.ADAPTER_PATH
         self.max_seq_length = params.MAX_SEQ_LENGTH
+        self.run_timestamp = params.RUN_TIMESTAMP
+        self.run_name = None  
         
         # Auto-detect device
         if torch.cuda.is_available():
@@ -80,8 +82,13 @@ class UniversalTrainer:
         os.makedirs(self.adapter_path, exist_ok=True)
         
     
-    def get_model(self) -> Tuple[Any, Any]:
-        """Load model - works on both MPS and CUDA"""
+    def get_model(self, apply_lora: bool = True) -> Tuple[Any, Any]:
+        """
+        Load model - works on both MPS and CUDA
+        
+        Args:
+            apply_lora: If True, applies LoRA adapters. If False, loads base model only.
+        """
         print(f"[INFO] Loading model: {self.model_name}")
         
         # Load model
@@ -116,27 +123,75 @@ class UniversalTrainer:
         )
         print("[INFO] Quality filter initialized")
         
-        # Apply LoRA
-        lora_config = LoraConfig(
-            r=params.LORA_CONFIG["r"],
-            lora_alpha=params.LORA_CONFIG["lora_alpha"],
-            lora_dropout=params.LORA_CONFIG["lora_dropout"],
-            target_modules=params.LORA_CONFIG["target_modules"],
-            bias="none",
-            task_type=TaskType.CAUSAL_LM,
-        )
-        
-        self.model = get_peft_model(self.model, lora_config)
-        self.model.print_trainable_parameters()
+        # Apply LoRA (only if requested)
+        if apply_lora:
+            lora_config = LoraConfig(
+                r=params.LORA_CONFIG["r"],
+                lora_alpha=params.LORA_CONFIG["lora_alpha"],
+                lora_dropout=params.LORA_CONFIG["lora_dropout"],
+                target_modules=params.LORA_CONFIG["target_modules"],
+                bias="none",
+                task_type=TaskType.CAUSAL_LM,
+            )
+            
+            self.model = get_peft_model(self.model, lora_config)
+            self.model.print_trainable_parameters()
+            print("[INFO] LoRA adapters applied")
+        else:
+            print("[INFO] Base model loaded WITHOUT LoRA adapters")
         
         # Move to device
         self.model = self.model.to(self.device)
         
         return self.model, self.tokenizer
     
-    def train(self, train_dataset, val_dataset=None, epochs=None):
+    def train(self, train_dataset, val_dataset=None, epochs=None, save_name=None):
         """Simple manual training loop - works everywhere"""
         epochs = epochs or params.EPOCHS
+        
+        # Create run name with timestamp
+        dataset_name = params.DATASET
+        if save_name:
+            self.run_name = f"{save_name}_{self.run_timestamp}"
+        else:
+            self.run_name = f"{params.MODEL_NAME.split('/')[-1]}-{dataset_name}-{epochs}ep-{self.run_timestamp}"
+        
+        # ✅ ADDED: Initialize WandB with matching name
+        if params.USE_WANDB:
+            wandb.init(
+                project=params.WANDB_PROJECT,
+                name=self.run_name,  # ← SAME as adapter save name!
+                tags=["training"],
+                config={
+                    # Model configuration
+                    "model/name": params.MODEL_NAME,
+                    "model/lora_r": params.LORA_CONFIG["r"],
+                    "model/lora_alpha": params.LORA_CONFIG["lora_alpha"],
+                    "model/lora_dropout": params.LORA_CONFIG["lora_dropout"],
+                    
+                    # Dataset configuration
+                    "dataset/name": dataset_name,
+                    "dataset/samples_requested": params.DATASET_SAMPLES,
+                    "dataset/samples_actual": len(train_dataset),  # ← Actual samples after filtering
+                    "dataset/min_words": params.MIN_WORDS,
+                    "dataset/min_total_tokens": params.MIN_TOTAL_TOKENS,
+                    "dataset/max_total_tokens": params.MAX_TOTAL_TOKENS,
+                    
+                    # Training configuration
+                    "training/epochs": epochs,
+                    "training/batch_size": self.batch_size,
+                    "training/learning_rate": params.OPTIMIZER_CONFIG["learning_rate"],
+                    "training/weight_decay": params.OPTIMIZER_CONFIG["weight_decay"],
+                    "training/gradient_accumulation_steps": params.GRADIENT_ACCUMULATION_STEPS,
+                    
+                    # Metadata
+                    "timestamp": self.run_timestamp,
+                }
+            )
+        
+        print(f"\n{'='*80}")
+        print(f"TRAINING: {self.run_name}")
+        print(f"{'='*80}\n")
         
         # Create dataloader
         dataloader = DataLoader(
@@ -187,31 +242,48 @@ class UniversalTrainer:
             avg_loss = np.mean(epoch_losses)
             print(f"Epoch {epoch+1} - Average Loss: {avg_loss:.4f}")
             
-            wandb.log({
-                "epoch": epoch + 1,
-                "train_loss": avg_loss,
-            })
+            if params.USE_WANDB:
+                wandb.log({
+                    "epoch": epoch + 1,
+                    "train_loss": avg_loss,
+                })
             
             if val_dataset:
                 val_loss = self._validate(val_dataset)
                 print(f"Validation Loss: {val_loss:.4f}")
-                wandb.log({"val_loss": val_loss, "epoch": epoch + 1})
+                
+                if params.USE_WANDB:
+                    wandb.log({"val_loss": val_loss, "epoch": epoch + 1})
                 
                 should_stop, best_path = self._check_early_stopping(val_loss, epoch)
                 
                 if should_stop:
+                    print(f"🛑 Early stopping triggered!")
                     print(f"Returning best model: {best_path}")
-                    return best_path
                     
-        # Save model
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        save_path = os.path.join(self.adapter_path, f"{timestamp}_final")
-        self.model.save_pretrained(save_path)
-        print(f"[INFO] Model saved to {save_path}")
+                    if params.USE_WANDB:
+                        wandb.log({"final_model_path": best_path})
+                    
+                    return best_path
         
-        wandb.log({'model_saved_path': save_path})
+        # ✅ CHANGED: Save final model with consistent naming
+        final_adapter_path = f"{self.adapter_path}{self.run_name}_final"
+        self.model.save_pretrained(final_adapter_path)
+        print(f"[INFO] Model saved to {final_adapter_path}")
         
-        return save_path
+        if params.USE_WANDB:
+            wandb.log({'model_saved_path': final_adapter_path})
+            
+            # Save model as artifact
+            artifact = wandb.Artifact(
+                name=f"adapter-{self.run_name}",
+                type="model",
+                description=f"LoRA adapter trained on {params.DATASET}"
+            )
+            artifact.add_dir(final_adapter_path)
+            wandb.log_artifact(artifact)
+        
+        return final_adapter_path
     
     def _check_early_stopping(self, current_val_loss, epoch):
         """
@@ -223,20 +295,27 @@ class UniversalTrainer:
             self.patience_counter = 0
             self.best_adapter_path = None
         
-        patience = 3
-        min_delta = 0.01
+        patience = getattr(params, 'EARLY_STOPPING_PATIENCE', 3)
+        min_delta = getattr(params, 'EARLY_STOPPING_MIN_DELTA', 0.01)
         
         if current_val_loss < (self.best_val_loss - min_delta):
             # Improvement
             self.best_val_loss = current_val_loss
             self.patience_counter = 0
             
-            # Save best model
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.best_adapter_path = f"./adapters/{timestamp}_best_ep{epoch+1}"
+            # ✅ CHANGED: Save best model with consistent naming
+            self.best_adapter_path = f"{self.adapter_path}{self.run_name}_best_ep{epoch+1}"
             self.model.save_pretrained(self.best_adapter_path)
             
             print(f"✅ New best model! Val loss: {current_val_loss:.4f}")
+            
+            if params.USE_WANDB:
+                wandb.log({
+                    "best_val_loss": current_val_loss,
+                    "best_epoch": epoch + 1,
+                    "best_model_path": self.best_adapter_path
+                })
+            
             return False, self.best_adapter_path
         else:
             # No improvement
@@ -244,7 +323,6 @@ class UniversalTrainer:
             print(f"⚠️  Patience: {self.patience_counter}/{patience}")
             
             if self.patience_counter >= patience:
-                print("🛑 Early stopping triggered!")
                 return True, self.best_adapter_path
             
             return False, None
@@ -252,57 +330,76 @@ class UniversalTrainer:
     def generate_translation(
         self, 
         prompt: str, 
-        max_new_tokens: int = 150,
-        temperature: float = 0.8,
-        top_p: float = 0.9,
+        generation_strategy: str = None,
+        max_new_tokens: int = None,
+        temperature: float = None,
+        top_p: float = None,
         use_quality_filter: bool = True,
         verbose: bool = False
-    ) -> Tuple[str, Optional[str]]:
+    ) -> Tuple[str, Optional[str], Dict[str, Any]]:
         """
         Generate translation with quality filtering and stopping criteria
         
         Args:
             prompt: Input prompt
-            max_new_tokens: Maximum tokens to generate
-            temperature: Sampling temperature
-            top_p: Nucleus sampling parameter
+            generation_strategy: Strategy name from params.GENERATION_CONFIGS (greedy, beam_search, sampling)
+                               If None, uses params.DEFAULT_GENERATION_STRATEGY
+            max_new_tokens: Override max_new_tokens from strategy (optional)
+            temperature: Override temperature from strategy (optional)
+            top_p: Override top_p from strategy (optional)
             use_quality_filter: Whether to apply quality filtering
             verbose: Print filtering details
             
         Returns:
-            Tuple of (raw_translation, filtered_translation)
+            Tuple of (raw_translation, filtered_translation, generation_config_dict)
         """
+        # Select generation strategy
+        if generation_strategy is None:
+            generation_strategy = params.DEFAULT_GENERATION_STRATEGY
+        
+        if generation_strategy not in params.GENERATION_CONFIGS:
+            raise ValueError(f"Unknown strategy '{generation_strategy}'. Choose from: {list(params.GENERATION_CONFIGS.keys())}")
+        
+        # Get base config from params
+        gen_config_dict = params.GENERATION_CONFIGS[generation_strategy].copy()
+        
+        # Apply overrides if provided
+        if max_new_tokens is not None:
+            gen_config_dict['max_new_tokens'] = max_new_tokens
+        if temperature is not None:
+            gen_config_dict['temperature'] = temperature
+        if top_p is not None:
+            gen_config_dict['top_p'] = top_p
+        
         # Tokenize input
         inputs = self.tokenizer(prompt, return_tensors="pt", max_length=512, truncation=True)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
         prompt_length = inputs['input_ids'].shape[1]
         
-        # Create stopping criteria
-        stopping_criteria = create_stopping_criteria_list(
-            tokenizer=self.tokenizer,
-            prompt_length=prompt_length,
-            max_new_tokens=max_new_tokens,
-            prevent_repetition=True,
-            prevent_language_switch=True,
-            check_after_tokens=100
-        )
+        # Create stopping criteria (only for greedy/sampling, not for beam search)
+        # Beam search has its own early stopping mechanism
+        stopping_criteria = None
+        if generation_strategy != "beam_search":
+            stopping_criteria = create_stopping_criteria_list(
+                tokenizer=self.tokenizer,
+                prompt_length=prompt_length,
+                max_new_tokens=gen_config_dict['max_new_tokens'],
+                prevent_repetition=True,
+                prevent_language_switch=True,
+                check_after_tokens=100
+            )
         
-        # Create generation config with improved parameters
+        # Create generation config from dict (excluding 'strategy' key)
+        gen_params = {k: v for k, v in gen_config_dict.items() if k != 'strategy'}
         generation_config = GenerationConfig(
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            do_sample=True,
-            no_repeat_ngram_size=3,        # Prevent 3-word repetitions
-            repetition_penalty=1.2,         # Penalize repeated tokens
             pad_token_id=self.tokenizer.pad_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
+            **gen_params
         )
         
-        print(f"🔍 DEBUG: generation_config.max_new_tokens = {generation_config.max_new_tokens}")
-    
-        # ... before generate ...
-        print(f"🔍 DEBUG: About to generate with input shape {inputs['input_ids'].shape}")
+        if verbose:
+            print(f"🔍 Using generation strategy: {generation_strategy}")
+            print(f"🔍 Config: {gen_config_dict}")
         
         
         # Generate
@@ -310,7 +407,7 @@ class UniversalTrainer:
             outputs = self.model.generate(
                 **inputs,
                 generation_config=generation_config,
-                stopping_criteria=stopping_criteria,
+                stopping_criteria=stopping_criteria if stopping_criteria else None,
                 use_cache=(self.device_type == "cuda"),
             )
         
@@ -331,7 +428,7 @@ class UniversalTrainer:
                 verbose=verbose
             )
         
-        return raw_translation, filtered_translation
+        return raw_translation, filtered_translation, gen_config_dict
     
     @weave.op()
     def test_generation(
@@ -340,7 +437,8 @@ class UniversalTrainer:
         test_dataset=None, 
         max_samples=None,
         use_quality_filter=True,
-        verbose_filter=False
+        verbose_filter=False,
+        generation_strategy=None
     ):
         """
         Enhanced test translation with comprehensive metrics and quality filtering
@@ -351,6 +449,8 @@ class UniversalTrainer:
             max_samples: Maximum samples to test
             use_quality_filter: Whether to apply quality filtering
             verbose_filter: Print filtering details for each sample
+            generation_strategy: Generation strategy to use (greedy, beam_search, sampling)
+                               If None, uses params.DEFAULT_GENERATION_STRATEGY
         """
         
         self.device = torch.device("cpu")
@@ -380,6 +480,9 @@ class UniversalTrainer:
                     tokenizer=self.tokenizer,
                     target_language='pt'
                 )
+        else:
+            # For baseline model, ensure it's on the correct device (CPU)
+            self.model = self.model.to(self.device)
         
         self.model.eval()
         
@@ -458,22 +561,30 @@ class UniversalTrainer:
             metrics = {}
             
             # ROUGE scores
-            if ROUGE_AVAILABLE and rouge_scorer_obj:
-                rouge_scores = defaultdict(list)
-                for pred, ref in zip(predictions, references):
-                    scores = rouge_scorer_obj.score(ref, pred)
-                    for metric, score in scores.items():
-                        rouge_scores[f"{metric}_f1"].append(score.fmeasure)
-                
-                for metric, scores in rouge_scores.items():
-                    metrics[metric] = np.mean(scores)
+            try:
+                if ROUGE_AVAILABLE and rouge_scorer_obj:
+                    rouge_scores = defaultdict(list)
+                    for pred, ref in zip(predictions, references):
+                        scores = rouge_scorer_obj.score(ref, pred)
+                        for metric, score in scores.items():
+                            rouge_scores[f"{metric}_f1"].append(score.fmeasure)
+                    
+                    for metric, scores in rouge_scores.items():
+                        metrics[metric] = np.mean(scores)
+            except Exception as e:
+                print(f"⚠️  ROUGE calculation failed: {e}")
+                import ipdb; ipdb.set_trace()
             
             # BLEU scores
-            if BLEU_AVAILABLE:
-                refs_formatted = [[ref] for ref in references]
-                bleu_score = sacrebleu.corpus_bleu(predictions, refs_formatted)
-                metrics['bleu'] = bleu_score.score
-                metrics['bleu_precisions'] = bleu_score.precisions
+            try:
+                if BLEU_AVAILABLE:
+                    refs_formatted = [[ref] for ref in references]
+                    bleu_score = sacrebleu.corpus_bleu(predictions, refs_formatted)
+                    metrics['bleu'] = bleu_score.score
+                    metrics['bleu_precisions'] = bleu_score.precisions
+            except Exception as e:
+                print(f"⚠️  BLEU calculation failed: {e}")
+                import ipdb; ipdb.set_trace()
             
             return metrics
         
@@ -553,10 +664,15 @@ class UniversalTrainer:
         """
                 prompts.append(prompt)
             
+        # Set generation strategy
+        if generation_strategy is None:
+            generation_strategy = params.DEFAULT_GENERATION_STRATEGY
+        
         print("\n" + "="*80)
         print("COMPREHENSIVE TRANSLATION EVALUATION")
         if use_quality_filter:
             print("(WITH QUALITY FILTERING)")
+        print(f"Generation Strategy: {generation_strategy.upper()}")
         print("="*80)
         
         # Generate predictions and calculate metrics
@@ -566,17 +682,19 @@ class UniversalTrainer:
         filtering_data = []
         
         for i, (prompt, reference) in enumerate(zip(prompts, references)):
+            # Always show progress (not just when verbose_filter is True)
+            if i % 10 == 0 or i < 5:
+                print(f"[Progress] Processing sample {i+1}/{len(prompts)}...")
+            
             if verbose_filter:
                 print(f"\n{'='*60}")
                 print(f"Processing sample {i+1}/{len(prompts)}")
                 print(f"{'='*60}")
             
             # Generate translation with quality filtering
-            raw_translation, filtered_translation = self.generate_translation(
+            raw_translation, filtered_translation, gen_config_used = self.generate_translation(
                 prompt=prompt,
-                max_new_tokens=params.MAX_NEW_TOKENS,
-                temperature=0.8,
-                top_p=0.9,
+                generation_strategy=generation_strategy,
                 use_quality_filter=use_quality_filter,
                 verbose=verbose_filter
             )
@@ -667,6 +785,43 @@ class UniversalTrainer:
                 if 'bleu_precisions' in metrics:
                     print(f"  Precisions: {[f'{p:.2f}' for p in metrics['bleu_precisions']]}")
         
+        #### CHECK FOR BLEU
+        
+        # After calculating metrics, add this:
+        if BLEU_AVAILABLE:
+            try:
+                print("\n" + "="*80)
+                print("BLEU CALCULATION DEBUG")
+                print("="*80)
+
+                print("\nFirst 10 samples:")
+                for i in range(min(10, len(filtered_predictions))):
+                    pred = filtered_predictions[i]
+                    ref = references[i]
+                    
+                    # Individual BLEU
+                    sent_bleu = sacrebleu.sentence_bleu(pred, [ref])
+                    
+                    print(f"\n{i+1}. Pred: {pred[:80]}...")
+                    print(f"   Ref:  {ref[:80]}...")
+                    print(f"   BLEU: {sent_bleu.score:.2f}")
+                    print(f"   Exact match: {'✅' if pred.strip() == ref.strip() else '❌'}")
+
+                # Check if all predictions are somehow identical to references
+                exact_matches = sum(1 for p, r in zip(filtered_predictions, references) if p.strip() == r.strip())
+                print(f"\nExact matches: {exact_matches}/{len(filtered_predictions)} ({exact_matches/len(filtered_predictions)*100:.1f}%)")
+
+                # Recalculate BLEU manually
+                corpus_bleu = sacrebleu.corpus_bleu(filtered_predictions, [[r] for r in references])
+                print(f"\nRecalculated corpus BLEU: {corpus_bleu.score:.2f}")
+                print(f"Precisions: {corpus_bleu.precisions}")
+                print("="*80)
+            except Exception as e:
+                print(f"⚠️  BLEU debug section failed: {e}")
+                import ipdb; ipdb.set_trace()
+        
+        #######
+        
         # Compare raw vs filtered metrics if filtering was used
         if use_quality_filter:
             raw_metrics = calculate_metrics(raw_predictions, references)
@@ -685,6 +840,9 @@ class UniversalTrainer:
         
         if wandb.run is not None:  # Check if wandb is initialized
                 wandb.log({
+                    # Generation strategy
+                    "test/generation_strategy": generation_strategy,
+                    
                     # Main metrics
                     "test/bleu": metrics.get('bleu', 0),
                     "test/rouge1_f1": metrics.get('rouge1_f1', 0),
@@ -743,6 +901,8 @@ class UniversalTrainer:
                     })
             
         results = {
+            'generation_strategy': generation_strategy,
+            'generation_config': params.GENERATION_CONFIGS[generation_strategy],
             'raw_predictions': raw_predictions,
             'filtered_predictions': filtered_predictions,
             'references': references,
@@ -817,27 +977,9 @@ class UniversalTrainer:
 if __name__ == "__main__":
     from pt_app.data.dataset import LanguageDS
     
-    
     # Initialize tracking BEFORE creating trainer
     weave.init(params.PROJECT_NAME)
 
-    wandb.init(
-        project=params.PROJECT_NAME,
-        name=f"{params.MODEL_NAME}-{params.DATASET}-{params.DATASET_SAMPLES}-{params.EPOCHS}ep-{datetime.now().strftime('%Y%m%d_%H%M')}",
-        tags=["baseline"],
-        config={
-            "model": params.MODEL_NAME,
-            "dataset": params.DATASET,
-            'n_samples': params.DATASET_SAMPLES,
-            "max_seq_length": params.MAX_SEQ_LENGTH,
-            "max_new_tokens": params.MAX_NEW_TOKENS,
-            "batch_size": params.BATCH_SIZE,  # Will be set by trainer
-            "epochs": params.EPOCHS,
-            "lora_r": params.LORA_CONFIG["r"],
-            "lora_alpha": params.LORA_CONFIG["lora_alpha"],
-        }
-    )
-    
     # Initialize trainer
     trainer = UniversalTrainer()
     
@@ -850,6 +992,38 @@ if __name__ == "__main__":
         tokenizer=tokenizer,
         dataset=params.DATASET,
     ).create_datasets(save=True)
+    
+    # After loading datasets
+    print("\n" + "="*80)
+    print("CHECKING FOR DATA LEAKAGE")
+    print("="*80)
+
+    # Get source texts
+    def get_source_text(item):
+        if 'source_text' in item:
+            return item['source_text']
+        # Extract from input_ids
+        input_ids = item['input_ids']
+        labels = item['labels']
+        label_start = next(i for i, l in enumerate(labels) if l != -100)
+        source_ids = input_ids[:label_start]
+        return tokenizer.decode(source_ids, skip_special_tokens=True)
+
+    train_sources = set([get_source_text(train[i]) for i in range(len(train))])
+    test_sources = set([get_source_text(test[i]) for i in range(len(test))])
+
+    overlap = train_sources & test_sources
+    print(f"Train samples: {len(train_sources)}")
+    print(f"Test samples: {len(test_sources)}")
+    print(f"⚠️  OVERLAP: {len(overlap)} samples!")
+
+    if len(overlap) > 0:
+        print("\nFirst 5 overlapping samples:")
+        for i, text in enumerate(list(overlap)[:5]):
+            print(f"  {i+1}. {text[:100]}...")
+    print("="*80 + "\n")
+    
+    import ipdb;ipdb.set_trace()
         
     print("\n" + "="*80)
     print("VERIFYING TRAINING DATA QUALITY")
@@ -885,68 +1059,27 @@ if __name__ == "__main__":
     print("="*80 + "\n")
 
     print(f"[INFO] Dataset sizes - Train: {len(train)}, Val: {len(val) if val else 0}, OPUS Test: {len(test) if test else 0}")
-    # Train
+    
+    # Train (WandB will be initialized inside train())
     adapter_path = trainer.train(train, val)
     
-    # Test with quality filtering enabled (RECOMMENDED)
+    # Test with quality filtering enabled
     print("\n" + "="*80)
     print("TESTING WITH QUALITY FILTERING ENABLED")
     print("="*80)
     opus_results = trainer.test_generation(
         adapter_path=adapter_path,
         test_dataset=test,
-        max_samples=20,  #SET TO NONE FOR FULL TESTSET
+        max_samples=None,
         use_quality_filter=True,
-        verbose_filter=False  # Set to True to see filtering details
+        verbose_filter=False,
+        generation_strategy=params.DEFAULT_GENERATION_STRATEGY
     )
     
-    # Evaluate on FLORES
-    # flores_loader = LanguageDS(tokenizer=tokenizer, dataset="flores")
-    # _, flores_val, flores_test = flores_loader.create_datasets(save=True)
-
-    # flores_results = trainer.test_generation(
-    #     adapter_path=adapter_path,
-    #     test_dataset=flores_test,  #SET TO NONE FOR FULL TESTSET
-    #     max_samples=20,  #SET TO NONE FOR FULL TESTSET
-    #     use_quality_filter=True,
-    #     verbose_filter=False  # Set to True to see filtering details
-    # )
-    
-    # # Log to WandB
-    # wandb.log({
-    #     "opus_bleu": opus_results['metrics']['bleu'],
-    #     "flores_bleu": flores_results['metrics']['bleu'],
-    #     "domain_transfer": flores_results['metrics']['bleu'] / opus_results['metrics']['bleu']
-    # })
-    
-    # print(f"\n{'='*80}")
-    # print(f"OPUS BLEU:   {opus_results['metrics']['bleu']:.2f}")
-    # print(f"FLORES BLEU: {flores_results['metrics']['bleu']:.2f}")
-    # print(f"Transfer:    {flores_results['metrics']['bleu'] / opus_results['metrics']['bleu'] * 100:.1f}%")
-    # print(f"{'='*80}")
-    
-    
-    wandb.finish()
-    
-    # Optionally test without filtering for comparison
-    # print("\n" + "="*80)
-    # print("TESTING WITHOUT QUALITY FILTERING (for comparison)")
-    # print("="*80)
-    # results_raw = trainer.test_generation(
-    #     adapter_path=adapter_path,
-    #     test_dataset=test,
-    #     max_samples=30,
-    #     use_quality_filter=False
-    # )
-    
-    # Summary comparison
+    # Summary
     print("\n" + "="*80)
     print("FINAL SUMMARY")
     print("="*80)
-    # print("\nWithout Quality Filter:")
-    # print(f"  BLEU Score: {results_raw['metrics'].get('bleu', 0):.2f}")
-    # print(f"  Average Perplexity: {results_raw['avg_perplexity']:.2f}")
-    # print(f"  ROUGE-L F1: {results_raw['metrics'].get('rougeL_f1', 0):.4f}")
     
     print("\nWith Quality Filter:")
     print(f"  BLEU Score: {opus_results['metrics'].get('bleu', 0):.2f}")
@@ -959,11 +1092,6 @@ if __name__ == "__main__":
         print(f"  Repetitions Cleaned: {opus_results['filter_stats']['repetitions']}")
         print(f"  Language Mixing Fixed: {opus_results['filter_stats']['language_mixing']}")
     
-    # Calculate improvements
-    # bleu_improvement = results_filtered['metrics'].get('bleu', 0) - results_raw['metrics'].get('bleu', 0)
-    # rouge_improvement = results_filtered['metrics'].get('rougeL_f1', 0) - results_raw['metrics'].get('rougeL_f1', 0)
-    
-    # print(f"\nOverall Improvements:")
-    # print(f"  BLEU: {bleu_improvement:+.2f} points")
-    # print(f"  ROUGE-L: {rouge_improvement:+.4f} points")
-    # print("="*80)
+    # ✅ ADDED: Finish wandb
+    if params.USE_WANDB:
+        wandb.finish()
