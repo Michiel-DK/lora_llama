@@ -35,24 +35,36 @@ def load_judge_datasets():
     return train_dataset, val_dataset, test_dataset
 
 def formatting_func(example):
-    """Format examples for training - combines input and output"""
-    return {"text": example["input"] + example["output"]}
+    """Format examples for training - converts chat messages to text"""
+    # Convert messages format to single text string
+    messages = example["messages"]
+    text = ""
+    for msg in messages:
+        role = msg["role"]
+        content = msg["content"]
+        if role == "user":
+            text += f"User: {content}\n\n"
+        elif role == "assistant":
+            text += f"Assistant: {content}"
+    return {"text": text}
 
 def train_judge_mps(
-    model_name="Qwen/Qwen2.5-3B-Instruct",  # Translation quality judge model
+    model_name="Qwen/Qwen2-1.5B-Instruct",  # Qwen2 1.5B Instruct for judge training
     output_dir="./adapters_eval",
     num_epochs=3,
-    batch_size=1,  # Optimized for Qwen 3B on M1 Pro 16GB
+    batch_size=1,
     gradient_accumulation_steps=2,  # Effective batch size = 2
     learning_rate=1e-4,
-    max_seq_length=2048,
+    max_seq_length=512,  # Reduced to 512 to fit in 16GB MPS memory
+    max_samples=None,  # Limit dataset size for testing
     project_name="EN_PT_TRANSLATION_LORA",
 ):
     """
     Fine-tune model as translation judge - OPTIMIZED FOR MPS (Apple Silicon)
     
-    Default config for Qwen 3B on M1 Pro 16GB:
+    Default config for Qwen2 1.5B Instruct on M1 Pro 16GB:
     - batch_size=1, gradient_accumulation_steps=2 (effective batch=2)
+    - max_seq_length=512 (reduced from 2048 to fit in 16GB MPS)
     - float32 precision, adamw_torch optimizer
     - WandB + Weave logging enabled
     """
@@ -125,14 +137,17 @@ def train_judge_mps(
     print("\n2. Applying LoRA adapters...")
     
     # Adjust LoRA rank based on model size
-    if "1B" in model_name:
-        lora_r = 16
+    if "1B" in model_name or "1.5B" in model_name or "1.8B" in model_name:
+        lora_r = 16  # Higher rank for smaller models (1B-2B)
         lora_alpha = 32
-    elif "3B" in model_name:
-        lora_r = 8  # Smaller rank for larger models
+    elif "3B" in model_name or "4B" in model_name:
+        lora_r = 8  # Smaller rank for larger models (3B-4B)
+        lora_alpha = 16
+    elif "7B" in model_name:
+        lora_r = 8  # Even smaller for 7B
         lora_alpha = 16
     else:
-        lora_r = 8
+        lora_r = 8  # Default conservative
         lora_alpha = 16
     
     lora_config = LoraConfig(
@@ -153,6 +168,14 @@ def train_judge_mps(
     # Load datasets
     print("\n3. Loading training data...")
     train_dataset, val_dataset, test_dataset = load_judge_datasets()
+    
+    # Limit dataset size if max_samples specified
+    if max_samples:
+        print(f"   Limiting to {max_samples} samples for testing...")
+        train_dataset = train_dataset.select(range(min(max_samples, len(train_dataset))))
+        val_dataset = val_dataset.select(range(min(max_samples // 5, len(val_dataset))))  # 20% for val
+        print(f"   Limited train: {len(train_dataset)} examples")
+        print(f"   Limited val: {len(val_dataset)} examples")
     
     # Format datasets
     train_dataset = train_dataset.map(formatting_func)
@@ -214,8 +237,8 @@ def train_judge_mps(
             super().__init__(*args, **kwargs)
             self.clear_cache_steps = clear_cache_steps
             
-        def training_step(self, model, inputs):
-            loss = super().training_step(model, inputs)
+        def training_step(self, model, inputs, num_items_in_batch=None):
+            loss = super().training_step(model, inputs, num_items_in_batch)
             
             # Clear MPS cache periodically
             if self.state.global_step % self.clear_cache_steps == 0:
@@ -225,14 +248,13 @@ def train_judge_mps(
             
             return loss
     
-    # Tokenization function
+    # Tokenization function - use dynamic padding for memory efficiency
     def tokenize_function(examples):
         return tokenizer(
             examples["text"],
             truncation=True,
             max_length=max_seq_length,
-            padding="max_length",
-            return_tensors="pt",
+            padding=False,  # Dynamic padding handled by data collator
         )
     
     # Tokenize datasets
@@ -248,6 +270,13 @@ def train_judge_mps(
         remove_columns=val_dataset.column_names,
     )
     
+    # Data collator for dynamic padding
+    from transformers import DataCollatorForLanguageModeling
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False,  # We're doing causal LM, not masked LM
+    )
+    
     # Create trainer
     print("\n6. Setting up trainer...")
     trainer = MPSTrainer(
@@ -256,6 +285,7 @@ def train_judge_mps(
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
+        data_collator=data_collator,  # Add data collator for dynamic padding
         clear_cache_steps=clear_cache_steps,
     )
     
@@ -294,20 +324,24 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train judge model on MPS (Apple Silicon)")
     parser.add_argument(
         "--model",
-        default="Qwen/Qwen2.5-3B-Instruct",
+        default="Qwen/Qwen2-1.5B-Instruct",
         choices=[
             "meta-llama/Llama-3.2-1B-Instruct",
             "meta-llama/Llama-3.2-3B-Instruct",
+            "Qwen/Qwen2-1.5B-Instruct",
+            "Qwen/Qwen2-7B-Instruct",
+            "Qwen/Qwen1.5-4B-Chat",
             "Qwen/Qwen2.5-3B-Instruct",
         ],
-        help="Model to fine-tune (Qwen 3B default for judge training)"
+        help="Model to fine-tune (Qwen2 1.5B Instruct default)"
     )
     parser.add_argument("--output_dir", default="./adapters_eval", help="Output directory")
     parser.add_argument("--epochs", type=int, default=3, help="Number of epochs")
     parser.add_argument("--batch_size", type=int, default=1, help="Per-device batch size")
     parser.add_argument("--gradient_accumulation", type=int, default=2, help="Gradient accumulation steps")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--max_seq_length", type=int, default=2048, help="Max sequence length")
+    parser.add_argument("--max_seq_length", type=int, default=512, help="Max sequence length (512 for 16GB MPS)")
+    parser.add_argument("--max_samples", type=int, default=None, help="Limit number of training samples (for testing)")
     parser.add_argument("--project_name", default="EN_PT_TRANSLATION_LORA", help="WandB project name")
     
     args = parser.parse_args()
@@ -329,5 +363,6 @@ if __name__ == "__main__":
         gradient_accumulation_steps=args.gradient_accumulation,
         learning_rate=args.lr,
         max_seq_length=args.max_seq_length,
+        max_samples=args.max_samples,
         project_name=args.project_name,
     )
