@@ -12,3 +12,4 @@ outputs/*
 wandb/*
 *.json
 *.ipynb
+adapters_eval/*

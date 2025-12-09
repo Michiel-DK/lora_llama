@@ -47,7 +47,9 @@ if __name__ == "__main__":
     print("Loading evaluation data...")
     with open(params.JUDGE_DATA_FILE, "r", encoding="utf-8") as f:
         eval_data = json.load(f)
-    
+        
+    dataset_path = '/'.join(params.JUDGE_DATA_FILE.split('/')[:-1])
+        
     print(f"Loaded {len(eval_data)} evaluation examples")
     
     # Format for Qwen
@@ -56,18 +58,24 @@ if __name__ == "__main__":
     
     # Split into train/val
     print("\nSplitting into train/validation...")
-    train_data, val_data = create_train_val_split(formatted_data, test_size=0.1)
+    train_data, val_data = create_train_val_split(formatted_data, test_size=0.2)
+    
+    val_data, test_data = create_train_val_split(val_data, test_size=0.5)
     
     # Save formatted datasets
-    with open("judge_train.json", "w", encoding="utf-8") as f:
+    with open(f"{dataset_path}/judge_train.json", "w", encoding="utf-8") as f:
         json.dump(train_data, f, ensure_ascii=False, indent=2)
     
-    with open("judge_val.json", "w", encoding="utf-8") as f:
+    with open(f"{dataset_path}/judge_val.json", "w", encoding="utf-8") as f:
         json.dump(val_data, f, ensure_ascii=False, indent=2)
+    
+    with open(f"{dataset_path}/judge_test.json", "w", encoding="utf-8") as f:
+        json.dump(test_data, f, ensure_ascii=False, indent=2)
     
     print("\n✓ Saved formatted datasets:")
     print(f"  - judge_train.json ({len(train_data)} examples)")
     print(f"  - judge_val.json ({len(val_data)} examples)")
+    print(f"  - judge_test.json ({len(test_data)} examples)")
     
     # Show example
     print("\n" + "="*60)
