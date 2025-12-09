@@ -58,23 +58,32 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
     
-    # Load base model
+    # Load base model - FORCE GPU with device_map
     print("\nLoading base model...")
     base_model = AutoModelForCausalLM.from_pretrained(
         args.base_model,
         torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto",
+        device_map={"": 0},  # Force GPU 0 instead of "auto"
     )
+    print(f"✅ Base model on device: {base_model.device}")
     
     # Load adapter
     print("Loading adapter...")
     model = PeftModel.from_pretrained(base_model, args.adapter_path)
     model.eval()
+    print(f"✅ Model with adapter on device: {next(model.parameters()).device}")
     
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.base_model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    
+    # Verify model is actually on GPU before eval
+    print(f"\n🔍 PRE-EVAL CHECK:")
+    print(f"   Model device: {next(model.parameters()).device}")
+    print(f"   CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"   GPU memory allocated: {torch.cuda.memory_allocated(0) / 1e9:.2f} GB")
     
     # Run evaluation
     print("\nRunning evaluation...")

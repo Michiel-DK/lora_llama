@@ -1,6 +1,14 @@
 # train_judge_cuda.py - Optimized for CUDA GPUs (Vast.ai)
+"""
+IMPROVEMENTS IN THIS VERSION:
+- LoRA rank increased to 32 for 3B models (from 16) - better capacity
+- Early stopping with patience=3 to prevent overfitting
+- Default epochs increased to 5 (early stopping prevents issues)
+- All changes focused on improving translation quality metrics
+"""
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, BitsAndBytesConfig
+from transformers import EarlyStoppingCallback
 from peft import LoraConfig, get_peft_model, PeftModel, prepare_model_for_kbit_training
 from datasets import Dataset
 import json
@@ -179,15 +187,20 @@ def evaluate_judge_model(model, tokenizer, test_dataset, device, max_seq_length=
     ref_rounded = np.round(reference_scores).astype(int)
     kappa = cohen_kappa_score(ref_rounded, pred_rounded)
     
-    # Pearson correlation
-    pearson_r, _ = pearsonr(predicted_scores, reference_scores)
+    # Pearson correlation (handle edge cases)
+    if len(predicted_scores) < 2:
+        pearson_r = np.nan
+    elif np.std(predicted_scores) == 0 or np.std(reference_scores) == 0:
+        pearson_r = np.nan
+    else:
+        pearson_r, _ = pearsonr(predicted_scores, reference_scores)
     
     # ROUGE-L for feedback text
     rouge_scores = []
     for pred_fb, ref_fb in zip(predicted_feedbacks, reference_feedbacks):
         score = scorer.score(ref_fb, pred_fb)
         rouge_scores.append(score['rougeL'].fmeasure)
-    rouge_l_f1 = np.mean(rouge_scores)
+    rouge_l_f1 = np.mean(rouge_scores) if rouge_scores else 0.0
     
     results = {
         'mae': mae,
@@ -209,7 +222,7 @@ def evaluate_judge_model(model, tokenizer, test_dataset, device, max_seq_length=
     print(f"  MAE:             {mae:.3f} points")
     print(f"  RMSE:            {rmse:.3f} points")
     print(f"  Cohen's Kappa:   {kappa:.3f} (agreement)")
-    print(f"  Pearson r:       {pearson_r:.3f} (correlation)")
+    print(f"  Pearson r:       {pearson_r if np.isnan(pearson_r) else f'{pearson_r:.3f}'} (correlation)")
     print(f"\nFeedback Quality:")
     print(f"  ROUGE-L F1:      {rouge_l_f1:.3f}")
     print("="*80)
@@ -227,7 +240,7 @@ def evaluate_judge_model(model, tokenizer, test_dataset, device, max_seq_length=
 def train_judge_cuda(
     model_name="Qwen/Qwen2.5-3B-Instruct",  # Qwen2.5 3B Instruct for judge training
     output_dir="./adapters_eval",
-    num_epochs=3,
+    num_epochs=5,  # INCREASED from 3 - early stopping will prevent overfitting
     batch_size=2,
     gradient_accumulation_steps=2,  # Effective batch size = 4
     learning_rate=2e-4,
@@ -352,14 +365,14 @@ def train_judge_cuda(
         lora_r = 16  # Higher rank for smaller models (1B-2B)
         lora_alpha = 32
     elif "3B" in model_name or "4B" in model_name:
-        lora_r = 16  # Medium rank for 3B models
-        lora_alpha = 32
+        lora_r = 32  # INCREASED from 16 - better capacity for Portuguese
+        lora_alpha = 64
     elif "7B" in model_name:
-        lora_r = 8  # Smaller for 7B
-        lora_alpha = 16
+        lora_r = 16  # Medium for 7B
+        lora_alpha = 32
     else:
-        lora_r = 8  # Default conservative
-        lora_alpha = 16
+        lora_r = 16  # Default
+        lora_alpha = 32
     
     lora_config = LoraConfig(
         r=lora_r,
@@ -427,6 +440,9 @@ def train_judge_cuda(
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         
+        # Early stopping to prevent overfitting
+        early_stopping_patience=3,  # Stop if no improvement for 3 evals (300 steps)
+        
         # CUDA-specific settings
         fp16=True,  # Use mixed precision for speed
         dataloader_pin_memory=True,
@@ -469,8 +485,13 @@ def train_judge_cuda(
         mlm=False,  # We're doing causal LM, not masked LM
     )
     
-    # Create trainer
-    print("\n6. Setting up trainer...")
+    # Create trainer with early stopping
+    print("\n6. Setting up trainer with early stopping...")
+    early_stopping = EarlyStoppingCallback(
+        early_stopping_patience=3,  # Stop if no improvement for 3 evaluations
+        early_stopping_threshold=0.0  # Any improvement counts
+    )
+    
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -478,6 +499,7 @@ def train_judge_cuda(
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=data_collator,
+        callbacks=[early_stopping],
     )
     
     # Train
