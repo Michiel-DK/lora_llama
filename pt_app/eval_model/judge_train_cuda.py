@@ -236,6 +236,7 @@ def train_judge_cuda(
     test_samples=None,  # Limit test dataset size
     project_name="EN_PT_TRANSLATION_LORA",
     use_4bit=True,  # Use QLoRA 4-bit quantization
+    skip_eval=False,  # Skip test evaluation
 ):
     """
     Fine-tune model as translation judge - OPTIMIZED FOR CUDA (Vast.ai)
@@ -499,6 +500,12 @@ def train_judge_cuda(
     print(f"Model saved to: {final_path}")
     print(f"WandB run: {project_name}/{run_name}")
     
+    # Finish WandB run if skipping eval
+    if args.skip_eval:
+        print("\n9. Skipping test evaluation (--skip_eval flag set)")
+        wandb.finish()
+        return trainer, None
+    
     # Evaluate on test set
     print("\n9. Running evaluation on test set...")
     
@@ -589,6 +596,7 @@ if __name__ == "__main__":
     parser.add_argument("--test_samples", type=int, default=None, help="Limit number of test samples (for faster eval)")
     parser.add_argument("--project_name", default="EN_PT_TRANSLATION_LORA", help="WandB project name")
     parser.add_argument("--no_4bit", action="store_true", help="Disable 4-bit quantization (use fp16)")
+    parser.add_argument("--skip_eval", action="store_true", help="Skip test evaluation after training")
     
     args = parser.parse_args()
     
@@ -613,4 +621,5 @@ if __name__ == "__main__":
         test_samples=args.test_samples,
         project_name=args.project_name,
         use_4bit=not args.no_4bit,
+        skip_eval=args.skip_eval,
     )
