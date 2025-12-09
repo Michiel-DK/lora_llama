@@ -499,17 +499,21 @@ def train_judge_cuda(
     print(f"Model saved to: {final_path}")
     print(f"WandB run: {project_name}/{run_name}")
     
-    # Evaluate on test set (move to CPU for memory efficiency)
-    print("\n9. Running evaluation on test set (CPU)...")
-    print("[INFO] Moving model to CPU to free GPU memory")
+    # Evaluate on test set
+    print("\n9. Running evaluation on test set...")
     
-    # Clear CUDA cache
+    # Clear CUDA cache before eval
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     
-    # Move model to CPU
-    model = model.to("cpu")
-    eval_device = torch.device("cpu")
+    # Keep model on GPU if available (faster), otherwise CPU
+    if torch.cuda.is_available():
+        eval_device = torch.device("cuda")
+        print("[INFO] Running eval on GPU (faster)")
+    else:
+        model = model.to("cpu")
+        eval_device = torch.device("cpu")
+        print("[INFO] Running eval on CPU")
     
     # Run evaluation
     eval_results = evaluate_judge_model(
