@@ -1,7 +1,7 @@
-# train_judge_mps.py - Optimized for Apple Silicon M1 Pro (16GB)
+# train_judge_cuda.py - Optimized for CUDA GPUs (Vast.ai)
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer
-from peft import LoraConfig, get_peft_model, PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, BitsAndBytesConfig
+from peft import LoraConfig, get_peft_model, PeftModel, prepare_model_for_kbit_training
 from datasets import Dataset
 import json
 import os
@@ -224,40 +224,45 @@ def evaluate_judge_model(model, tokenizer, test_dataset, device, max_seq_length=
     
     return results
 
-def train_judge_mps(
-    model_name="Qwen/Qwen2-1.5B-Instruct",  # Qwen2 1.5B Instruct for judge training
+def train_judge_cuda(
+    model_name="Qwen/Qwen2.5-3B-Instruct",  # Qwen2.5 3B Instruct for judge training
     output_dir="./adapters_eval",
     num_epochs=3,
-    batch_size=1,
-    gradient_accumulation_steps=2,  # Effective batch size = 2
-    learning_rate=1e-4,
-    max_seq_length=512,  # Reduced to 512 to fit in 16GB MPS memory
+    batch_size=2,
+    gradient_accumulation_steps=2,  # Effective batch size = 4
+    learning_rate=2e-4,
+    max_seq_length=512,
     max_samples=None,  # Limit dataset size for testing
     test_samples=None,  # Limit test dataset size
     project_name="EN_PT_TRANSLATION_LORA",
+    use_4bit=True,  # Use QLoRA 4-bit quantization
 ):
     """
-    Fine-tune model as translation judge - OPTIMIZED FOR MPS (Apple Silicon)
+    Fine-tune model as translation judge - OPTIMIZED FOR CUDA (Vast.ai)
     
-    Default config for Qwen2 1.5B Instruct on M1 Pro 16GB:
-    - batch_size=1, gradient_accumulation_steps=2 (effective batch=2)
-    - max_seq_length=512 (reduced from 2048 to fit in 16GB MPS)
-    - float32 precision, adamw_torch optimizer
+    Default config for Qwen2.5 3B Instruct on 8-12GB GPU:
+    - batch_size=2, gradient_accumulation_steps=2 (effective batch=4)
+    - max_seq_length=512
+    - 4-bit QLoRA quantization (fits in 8GB VRAM)
+    - fp16 precision, paged_adamw_8bit optimizer
     - WandB + Weave logging enabled
     """
     
     # Initialize WandB and Weave
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_short = model_name.split("/")[-1]  # "Qwen2.5-3B-Instruct"
+    model_short = model_name.split("/")[-1]
     run_name = f"{model_short}-judge-{num_epochs}ep-{timestamp}"
     
     print("="*80)
-    print(f"TRAINING JUDGE MODEL ON MPS (Apple Silicon)")
+    print(f"TRAINING JUDGE MODEL ON CUDA (Vast.ai GPU)")
     print("="*80)
     print(f"Model: {model_name}")
     print(f"Run name: {run_name}")
-    print(f"Available RAM: 16GB")
-    print(f"Device: {'MPS' if torch.backends.mps.is_available() else 'CPU'}")
+    print(f"Quantization: {'4-bit QLoRA' if use_4bit else 'fp16'}")
+    print(f"Device: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     print("="*80)
     
     # Initialize logging
@@ -265,7 +270,7 @@ def train_judge_mps(
     wandb.init(
         project=project_name,
         name=run_name,
-        tags=["judge_training", "mps", "lora"],
+        tags=["judge_training", "cuda", "lora", "vast.ai"],
         config={
             "model": model_name,
             "batch_size": batch_size,
@@ -273,7 +278,8 @@ def train_judge_mps(
             "learning_rate": learning_rate,
             "num_epochs": num_epochs,
             "max_seq_length": max_seq_length,
-            "device": "mps",
+            "device": "cuda",
+            "use_4bit": use_4bit,
         }
     )
     
@@ -282,23 +288,50 @@ def train_judge_mps(
     print(f"✅ Weave initialized: {project_name}")
     
     # Detect device
-    if torch.backends.mps.is_available():
-        device = torch.device("mps")
-        device_type = "mps"
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        device_type = "cuda"
     else:
         device = torch.device("cpu")
         device_type = "cpu"
-        print("⚠️  MPS not available, using CPU (will be slower)")
+        print("⚠️  CUDA not available, using CPU (will be VERY slow)")
     
-    # Load model - NO QUANTIZATION on MPS
+    # Load model with 4-bit quantization for memory efficiency
     print("\n1. Loading model...")
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.float32,  # MPS works best with float32
-        trust_remote_code=True,
-        cache_dir="./cache/",
-        use_cache=False,  # Disable for training
-    )
+    
+    if use_4bit:
+        # QLoRA 4-bit config for 8GB GPUs
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+        )
+        
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            quantization_config=bnb_config,
+            trust_remote_code=True,
+            cache_dir="./cache/",
+            device_map="auto",
+            use_cache=False,
+        )
+        
+        # Prepare model for k-bit training
+        model = prepare_model_for_kbit_training(model)
+        
+        print("✅ Model loaded with 4-bit quantization")
+    else:
+        # Standard fp16 loading
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            trust_remote_code=True,
+            cache_dir="./cache/",
+            device_map="auto",
+            use_cache=False,
+        )
+        print("✅ Model loaded with fp16")
     
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
@@ -310,7 +343,7 @@ def train_judge_mps(
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
     
-    # LoRA configuration - OPTIMIZED FOR 16GB
+    # LoRA configuration
     print("\n2. Applying LoRA adapters...")
     
     # Adjust LoRA rank based on model size
@@ -318,10 +351,10 @@ def train_judge_mps(
         lora_r = 16  # Higher rank for smaller models (1B-2B)
         lora_alpha = 32
     elif "3B" in model_name or "4B" in model_name:
-        lora_r = 8  # Smaller rank for larger models (3B-4B)
-        lora_alpha = 16
+        lora_r = 16  # Medium rank for 3B models
+        lora_alpha = 32
     elif "7B" in model_name:
-        lora_r = 8  # Even smaller for 7B
+        lora_r = 8  # Smaller for 7B
         lora_alpha = 16
     else:
         lora_r = 8  # Default conservative
@@ -337,7 +370,7 @@ def train_judge_mps(
     )
     
     model = get_peft_model(model, lora_config)
-    model = model.to(device)
+    # No need to move to device - device_map="auto" handles it
     
     print("\nTrainable parameters:")
     model.print_trainable_parameters()
@@ -363,7 +396,6 @@ def train_judge_mps(
     per_device_batch = batch_size
     grad_accum = gradient_accumulation_steps
     effective_batch_size = per_device_batch * grad_accum
-    clear_cache_steps = 5  # Clear MPS cache every 5 steps for stability
     
     print(f"\n4. Training configuration:")
     print(f"   Per-device batch size: {per_device_batch}")
@@ -371,17 +403,17 @@ def train_judge_mps(
     print(f"   Effective batch size: {effective_batch_size}")
     print(f"   Learning rate: {learning_rate}")
     print(f"   Max sequence length: {max_seq_length}")
-    print(f"   Clear cache every: {clear_cache_steps} steps")
+    print(f"   Gradient checkpointing: Enabled")
     
-    # Training arguments - MPS OPTIMIZED with WandB integration
+    # Training arguments - CUDA OPTIMIZED with WandB integration
     training_args = TrainingArguments(
         output_dir=output_dir,
-        run_name=run_name,  # WandB run name
+        run_name=run_name,
         num_train_epochs=num_epochs,
         per_device_train_batch_size=per_device_batch,
         per_device_eval_batch_size=per_device_batch,
         gradient_accumulation_steps=grad_accum,
-        report_to=["wandb"],  # Enable WandB logging
+        report_to=["wandb"],
         learning_rate=learning_rate,
         weight_decay=0.01,
         warmup_steps=100,
@@ -394,36 +426,18 @@ def train_judge_mps(
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         
-        # MPS-specific settings
-        use_cpu=False,  # Use MPS
-        dataloader_pin_memory=False,  # Don't pin memory on MPS
-        dataloader_num_workers=0,  # Avoid multiprocessing issues
+        # CUDA-specific settings
+        fp16=True,  # Use mixed precision for speed
+        dataloader_pin_memory=True,
+        dataloader_num_workers=4,
         
-        # NO FP16/BF16 quantization - use default float32
-        # NO 8-bit optimizer - use standard AdamW
-        optim="adamw_torch",
+        # 8-bit optimizer for memory efficiency
+        optim="paged_adamw_8bit" if use_4bit else "adamw_torch",
         
         # Memory management
-        gradient_checkpointing=False,  # Can enable if OOM
-        max_grad_norm=1.0,
+        gradient_checkpointing=True,  # Enable for memory efficiency
+        max_grad_norm=0.3,  # Lower for stability with 4-bit
     )
-    
-    # Custom Trainer with MPS memory management
-    class MPSTrainer(Trainer):
-        def __init__(self, *args, clear_cache_steps=5, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.clear_cache_steps = clear_cache_steps
-            
-        def training_step(self, model, inputs, num_items_in_batch=None):
-            loss = super().training_step(model, inputs, num_items_in_batch)
-            
-            # Clear MPS cache periodically
-            if self.state.global_step % self.clear_cache_steps == 0:
-                if torch.backends.mps.is_available():
-                    torch.mps.empty_cache()
-                    torch.mps.synchronize()
-            
-            return loss
     
     # Tokenization function - use dynamic padding for memory efficiency
     def tokenize_function(examples):
@@ -456,20 +470,19 @@ def train_judge_mps(
     
     # Create trainer
     print("\n6. Setting up trainer...")
-    trainer = MPSTrainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
-        data_collator=data_collator,  # Add data collator for dynamic padding
-        clear_cache_steps=clear_cache_steps,
+        data_collator=data_collator,
     )
     
     # Train
     print("\n7. Starting training...")
     print("="*80)
-    print("💡 TIP: If you see OOM errors, reduce batch_size or enable gradient_checkpointing")
+    print("💡 TIP: Monitor VRAM usage with: watch -n 1 nvidia-smi")
     print("="*80)
     
     trainer.train()
@@ -486,14 +499,13 @@ def train_judge_mps(
     print(f"Model saved to: {final_path}")
     print(f"WandB run: {project_name}/{run_name}")
     
-    # Evaluate on test set (move to CPU to avoid MPS OOM)
+    # Evaluate on test set (move to CPU for memory efficiency)
     print("\n9. Running evaluation on test set (CPU)...")
-    print("[INFO] Moving model to CPU to avoid MPS memory issues during inference")
+    print("[INFO] Moving model to CPU to free GPU memory")
     
-    # Clear MPS cache before moving to CPU
-    if torch.backends.mps.is_available():
-        torch.mps.empty_cache()
-        torch.mps.synchronize()
+    # Clear CUDA cache
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     # Move model to CPU
     model = model.to("cpu")
@@ -549,10 +561,10 @@ def train_judge_mps(
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Train judge model on MPS (Apple Silicon)")
+    parser = argparse.ArgumentParser(description="Train judge model on CUDA (Vast.ai)")
     parser.add_argument(
         "--model",
-        default="Qwen/Qwen2-1.5B-Instruct",
+        default="Qwen/Qwen2.5-3B-Instruct",
         choices=[
             "meta-llama/Llama-3.2-1B-Instruct",
             "meta-llama/Llama-3.2-3B-Instruct",
@@ -561,30 +573,31 @@ if __name__ == "__main__":
             "Qwen/Qwen1.5-4B-Chat",
             "Qwen/Qwen2.5-3B-Instruct",
         ],
-        help="Model to fine-tune (Qwen2 1.5B Instruct default)"
+        help="Model to fine-tune (Qwen2.5 3B Instruct default)"
     )
     parser.add_argument("--output_dir", default="./adapters_eval", help="Output directory")
     parser.add_argument("--epochs", type=int, default=3, help="Number of epochs")
-    parser.add_argument("--batch_size", type=int, default=1, help="Per-device batch size")
+    parser.add_argument("--batch_size", type=int, default=2, help="Per-device batch size")
     parser.add_argument("--gradient_accumulation", type=int, default=2, help="Gradient accumulation steps")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--max_seq_length", type=int, default=512, help="Max sequence length (512 for 16GB MPS)")
+    parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate")
+    parser.add_argument("--max_seq_length", type=int, default=512, help="Max sequence length")
     parser.add_argument("--max_samples", type=int, default=None, help="Limit number of training samples (for testing)")
     parser.add_argument("--test_samples", type=int, default=None, help="Limit number of test samples (for faster eval)")
     parser.add_argument("--project_name", default="EN_PT_TRANSLATION_LORA", help="WandB project name")
+    parser.add_argument("--no_4bit", action="store_true", help="Disable 4-bit quantization (use fp16)")
     
     args = parser.parse_args()
     
     print("\n" + "="*80)
-    print("JUDGE MODEL TRAINING - MPS OPTIMIZED")
+    print("JUDGE MODEL TRAINING - CUDA OPTIMIZED")
     print("="*80)
-    print(f"System: M1 Pro (16GB RAM)")
     print(f"Model: {args.model}")
     print(f"Batch size: {args.batch_size}, Grad accum: {args.gradient_accumulation}")
     print(f"Effective batch: {args.batch_size * args.gradient_accumulation}")
+    print(f"Quantization: {'4-bit QLoRA' if not args.no_4bit else 'fp16'}")
     print("="*80 + "\n")
     
-    trainer, eval_results = train_judge_mps(
+    trainer, eval_results = train_judge_cuda(
         model_name=args.model,
         output_dir=args.output_dir,
         num_epochs=args.epochs,
@@ -595,4 +608,5 @@ if __name__ == "__main__":
         max_samples=args.max_samples,
         test_samples=args.test_samples,
         project_name=args.project_name,
+        use_4bit=not args.no_4bit,
     )
