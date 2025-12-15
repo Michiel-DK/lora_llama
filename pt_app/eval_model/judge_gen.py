@@ -2,10 +2,14 @@ import os
 import json
 import time
 import argparse
+import random
 from datetime import datetime, timedelta
 from datasets import load_dataset
 from groq import Groq
 from tqdm import tqdm
+
+# Import prompt templates from separate file
+from prompts import PROMPT_BALANCED, PROMPT_LOW_SCORES, PROMPT_MIDDLE_RANGE
 
 # Rate limiting configuration for FREE TIER
 REQUESTS_PER_MINUTE = 50  # Reduced from 25 for safety
@@ -53,101 +57,45 @@ class RateLimiter:
         # Record this request
         self.request_times.append(time.time())
         self.total_requests += 1
+    
+    def add_headers(self, headers):
+        """Store rate limit headers from API response"""
+        self.rate_limit_headers.append(headers)
+    
+    def get_latest_limits(self):
+        """Get latest rate limit information from headers"""
+        if not self.rate_limit_headers:
+            return None
+        return self.rate_limit_headers[-1]
 
-def generate_evaluation_examples(client, rate_limiter, source_en, reference_pt, max_retries=3):
+def generate_evaluation_examples(client, rate_limiter, source_en, reference_pt, prompt_type="balanced", max_retries=3):
     """
     Generate 4 translation variations with different quality levels
-    Returns list of evaluation examples
+    
+    Args:
+        client: Groq client
+        rate_limiter: RateLimiter instance
+        source_en: English source text
+        reference_pt: Portuguese reference translation
+        prompt_type: Either 'balanced', 'low_scores', or 'middle_range'
+        max_retries: Number of retry attempts
+    
+    Returns:
+        List of evaluation examples
     """
     
-    prompt = f"""You are a translation quality assessment expert for English → Portuguese translation.
+    # Select prompt template based on type
+    if prompt_type == "low_scores":
+        prompt_template = PROMPT_LOW_SCORES
+    elif prompt_type == "middle_range":
+        prompt_template = PROMPT_MIDDLE_RANGE
+    else:
+        prompt_template = PROMPT_BALANCED
+    
+    prompt = prompt_template.format(source_en=source_en, reference_pt=reference_pt)
+    
+    # Retry loop for API call 
 
-        Given this professional translation:
-        Source (English): {source_en}
-        Reference (Portuguese): {reference_pt}
-
-        Your task is to generate exactly **4 Portuguese translations** with controlled, explicit error types at different quality levels. Accept both European and Brazilian Portuguese variants.
-
-        CRITICAL GLOBAL RULES:
-        - All translations must preserve the core meaning of the English source
-        - Do NOT add new information or omit ideas unless the error type explicitly requires it
-        - Do NOT leave any words in English
-        - Keep sentence structure reasonably close to the original
-        - Each variation must contain ONLY the intended error(s)—no accidental mistakes
-        - Every item in "issues" must correspond to a VISIBLE error in the translation
-        - For GOOD and EXCELLENT translations, the issues list MUST be empty
-
-        SCORING GUIDELINES:
-        0-2: Incomprehensible or completely wrong meaning
-        3-4: ONE major error that significantly impacts comprehension
-        5-6: ONE major error with minor impact OR 2-3 minor errors combined
-        7-8: 1-2 minor errors, meaning fully preserved
-        9: Nearly perfect, one extremely subtle stylistic issue only
-        10: Perfect or equally valid alternative
-
-        REQUIRED VARIATIONS:
-
-        1. LOW QUALITY (Score 3-5):
-        Introduce EXACTLY ONE major error:
-        a) Wrong verb with semantic shift: "gostar"→"adorar" (like→love), "ir"→"vir" (go→come)
-        b) Missing required word: omit article ("o", "a") or preposition ("de", "para", "em")
-        c) Wrong word - same category: "cão"→"gato" (dog→cat), "carro"→"ônibus" (car→bus)
-        d) Diacritic changing meaning: "cafe"→"café", "esta"→"está", "e"→"é"
-        e) Wrong tense affecting meaning: present instead of past or vice versa
-        f) Gender/number disagreement: "o casa" (masc+fem), "os gato" (plural+singular)
-        
-        Score 3-4: Error significantly impacts understanding
-        Score 5-6: Error noticeable but meaning still clear
-
-        2. MEDIUM QUALITY (Score 6-7):
-        Introduce 1-2 minor errors:
-        a) Unnecessary or missing article where both work: "o café" vs "café"
-        b) Missing non-critical diacritic: "voce"→"você", "nao"→"não"
-        c) Slightly unnatural word choice: correct but uncommon synonym
-        d) Minor preposition variation: "em casa" vs "na casa"
-        e) Missing contraction: "de o" instead of "do"
-        
-        Choose 1 error for score 7, or 2 errors for score 6
-
-        3. GOOD QUALITY (Score 8-9):
-        Nearly perfect with EXACTLY ONE extremely subtle issue:
-        a) Slight formality mismatch for context
-        b) Word order acceptable but not optimal: "Sempre eu como" vs "Eu como sempre"
-        c) Overly literal phrasing: grammatically correct but native would phrase differently
-        
-        Score 9: One subtle issue
-        Score 8: Issue slightly more noticeable
-        ALL grammar, vocabulary, diacritics must be correct
-
-        4. EXCELLENT QUALITY (Score 10):
-        Must be:
-        - Grammatically perfect, all diacritics correct
-        - Natural Portuguese (not word-for-word translation)
-        - Meaning fully preserved
-        - Different from reference in at least one way:
-            * Different synonym ("adorar" vs "amar")
-            * Different structure ("Eu adoro café" vs "Adoro café")
-            * Different word order (if both valid)
-        - NO errors or issues whatsoever
-
-        IMPORTANT CONSTRAINTS:
-        - Do not combine multiple major errors in one translation
-        - If introducing a diacritic error, choose words where it matters: café≠cafe, está≠esta
-        - Each variation must have CLEARLY DIFFERENT error types
-        - Be specific about which error you introduced in the error_type field
-
-        OUTPUT FORMAT:
-        For EACH translation, return:
-        {{
-        "translation": "Portuguese text",
-        "score": exact_number_0_to_10,
-        "error_type": "specific_error_introduced (or 'none' for score 10)",
-        "issues": ["specific", "observable", "problems"],
-        "feedback": "1-2 sentences explaining the score and error"
-        }}
-
-        Return ONLY a valid JSON array with 4 variations, ordered lowest to highest score.
-        """
     for attempt in range(max_retries):
         try:
             # CRITICAL: Wait for rate limit BEFORE making request
@@ -169,6 +117,21 @@ def generate_evaluation_examples(client, rate_limiter, source_en, reference_pt, 
                 rate_limiter.add_headers(response.headers)
             
             content = response.choices[0].message.content.strip()
+            
+            # Remove thinking tokens if present
+            if '<think>' in content:
+                # Remove everything from <think> to </think>
+                import re
+                content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+                content = content.strip()
+            
+            # Remove markdown code fences if present
+            if content.startswith('```'):
+                # Remove ```json or ``` at start and ``` at end
+                import re
+                content = re.sub(r'^```(?:json)?\s*', '', content)
+                content = re.sub(r'\s*```$', '', content)
+                content = content.strip()
             
             # Extract JSON from response
             start_idx = content.find('[')
@@ -201,7 +164,8 @@ def generate_evaluation_examples(client, rate_limiter, source_en, reference_pt, 
                 continue
                 
         except json.JSONDecodeError as e:
-            print(f"  JSON decode error (attempt {attempt + 1})")
+            print(f"  JSON decode error (attempt {attempt + 1}): {e}")
+            print(f"  Response preview: {content[:500] if 'content' in locals() else 'No content'}")
             if attempt < max_retries - 1:
                 time.sleep(2)
                 continue
@@ -278,7 +242,7 @@ def print_rate_limit_summary(rate_limiter, elapsed_time):
     
     print("="*60)
 
-def main(flores_file, num_samples=None, output_file="judge_training_data.json", start_from=0):
+def main(flores_file, num_samples=None, output_file="judge_training_data.json", start_from=0, prompt_type=PROMPT_BALANCED, shuffle=False, seed=None):
     """
     Main function to generate evaluation data
     
@@ -287,6 +251,9 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json", 
         num_samples: Number of FLORES examples to process (None = all)
         output_file: Output filename for the training data
         start_from: Starting index in FLORES dataset (for resuming)
+        prompt_type: PROMPT_BALANCED (default) or PROMPT_LOW_SCORES
+        shuffle: Whether to shuffle the dataset before processing
+        seed: Random seed for shuffling (for reproducibility)
     """
     # Initialize
     client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
@@ -298,6 +265,16 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json", 
         flores_data = json.load(f)
     
     print(f"✓ Loaded {len(flores_data)} FLORES examples")
+    
+    # Shuffle if requested
+    if shuffle:
+        if seed is not None:
+            random.seed(seed)
+            print(f"🔀 Shuffling dataset with seed: {seed}")
+        else:
+            print(f"🔀 Shuffling dataset randomly")
+        random.shuffle(flores_data)
+        print(f"✓ Dataset shuffled for diversity")
     
     # Determine sample size
     total_available = len(flores_data)
@@ -351,7 +328,7 @@ def main(flores_file, num_samples=None, output_file="judge_training_data.json", 
         reference_pt = example['sentence_por_Latn']
         
         # Generate variations
-        variations = generate_evaluation_examples(client, rate_limiter, source_en, reference_pt)
+        variations = generate_evaluation_examples(client, rate_limiter, source_en, reference_pt, prompt_type=prompt_type)
         
         if variations is None:
             failed_count += 1
@@ -501,6 +478,27 @@ Examples:
         help="Start from this FLORES example index (default: 0, useful for resuming)"
     )
     
+    parser.add_argument(
+        "--prompt-type",
+        type=str,
+        choices=["balanced", "low_scores", "middle_range"],
+        default="balanced",
+        help="Prompt type: 'balanced' (scores 3-10), 'low_scores' (scores 1-5), or 'middle_range' (scores 4-8)"
+    )
+    
+    parser.add_argument(
+        "--shuffle",
+        action="store_true",
+        help="Shuffle the dataset before processing for diversity (useful for small batches)"
+    )
+    
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for shuffling (for reproducibility)"
+    )
+    
     
     args = parser.parse_args()
     
@@ -520,7 +518,11 @@ Examples:
         evaluation_data, stats = main(
             flores_file=args.flores,
             num_samples=args.samples,
-            output_file=args.output
+            output_file=args.output,
+            start_from=args.start,
+            prompt_type=args.prompt_type,
+            shuffle=args.shuffle,
+            seed=args.seed
         )
         print("\n✓ Generation completed successfully!")
     except KeyboardInterrupt:
