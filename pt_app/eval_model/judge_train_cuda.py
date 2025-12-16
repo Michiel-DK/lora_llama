@@ -250,6 +250,7 @@ def train_judge_cuda(
     project_name="EN_PT_TRANSLATION_LORA",
     use_4bit=True,  # Use QLoRA 4-bit quantization
     skip_eval=False,  # Skip test evaluation
+    base_adapter=None,  # Path to existing adapter to continue training from
 ):
     """
     Fine-tune model as translation judge - OPTIMIZED FOR CUDA (Vast.ai)
@@ -347,6 +348,45 @@ def train_judge_cuda(
         )
         print("✅ Model loaded with fp16")
     
+    # Load base adapter if provided (for continuing training)
+    if base_adapter:
+        print(f"\n🔄 Loading base adapter from: {base_adapter}")
+        model = PeftModel.from_pretrained(
+            model,
+            base_adapter,
+            is_trainable=True,  # Make adapter trainable for continued training
+        )
+        print("✅ Base adapter loaded, will continue training from checkpoint")
+    else:
+        # LoRA configuration (only if NOT loading existing adapter)
+        print("\n2. Applying LoRA adapters...")
+        
+        # Adjust LoRA rank based on model size
+        if "1B" in model_name or "1.5B" in model_name or "1.8B" in model_name:
+            lora_r = 16  # Higher rank for smaller models (1B-2B)
+            lora_alpha = 32
+        elif "3B" in model_name or "4B" in model_name:
+            lora_r = 32  # INCREASED from 16 - better capacity for Portuguese
+            lora_alpha = 64
+        elif "7B" in model_name:
+            lora_r = 16  # Medium for 7B
+            lora_alpha = 32
+        else:
+            lora_r = 16  # Default
+            lora_alpha = 32
+        
+        lora_config = LoraConfig(
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM"
+        )
+        
+        model = get_peft_model(model, lora_config)
+        # No need to move to device - device_map="auto" handles it
+    
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
         trust_remote_code=True,
@@ -356,35 +396,6 @@ def train_judge_cuda(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
-    
-    # LoRA configuration
-    print("\n2. Applying LoRA adapters...")
-    
-    # Adjust LoRA rank based on model size
-    if "1B" in model_name or "1.5B" in model_name or "1.8B" in model_name:
-        lora_r = 16  # Higher rank for smaller models (1B-2B)
-        lora_alpha = 32
-    elif "3B" in model_name or "4B" in model_name:
-        lora_r = 32  # INCREASED from 16 - better capacity for Portuguese
-        lora_alpha = 64
-    elif "7B" in model_name:
-        lora_r = 16  # Medium for 7B
-        lora_alpha = 32
-    else:
-        lora_r = 16  # Default
-        lora_alpha = 32
-    
-    lora_config = LoraConfig(
-        r=lora_r,
-        lora_alpha=lora_alpha,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM"
-    )
-    
-    model = get_peft_model(model, lora_config)
-    # No need to move to device - device_map="auto" handles it
     
     print("\nTrainable parameters:")
     model.print_trainable_parameters()
@@ -439,9 +450,6 @@ def train_judge_cuda(
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
-        
-        # Early stopping to prevent overfitting
-        early_stopping_patience=3,  # Stop if no improvement for 3 evals (300 steps)
         
         # CUDA-specific settings
         fp16=True,  # Use mixed precision for speed
@@ -619,6 +627,7 @@ if __name__ == "__main__":
     parser.add_argument("--project_name", default="EN_PT_TRANSLATION_LORA", help="WandB project name")
     parser.add_argument("--no_4bit", action="store_true", help="Disable 4-bit quantization (use fp16)")
     parser.add_argument("--skip_eval", action="store_true", help="Skip test evaluation after training")
+    parser.add_argument("--base_adapter", default=None, help="Path to existing adapter to continue training from (e.g., ./adapters/model_name)")
     
     args = parser.parse_args()
     
@@ -644,4 +653,5 @@ if __name__ == "__main__":
         project_name=args.project_name,
         use_4bit=not args.no_4bit,
         skip_eval=args.skip_eval,
+        base_adapter=args.base_adapter,
     )

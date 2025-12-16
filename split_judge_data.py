@@ -96,7 +96,8 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Split judge training data into train/val/test")
     parser.add_argument(
-        "--input",
+        "input",
+        nargs='?',
         default="datasets/judge_eval/judge_training_data_final.json",
         help="Input file (default: datasets/judge_eval/judge_training_data_final.json)"
     )
