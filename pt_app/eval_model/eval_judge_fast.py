@@ -48,6 +48,7 @@ def evaluate_fast(model, tokenizer, test_dataset, device, max_seq_length=512, te
         
         print(f"\n🔍 Processing example {i}/{len(test_dataset)}...")
         
+        # Use messages format
         messages = example["messages"]
         user_prompt = messages[0]["content"]
         reference_response = messages[1]["content"]
@@ -191,7 +192,7 @@ def main():
     
     # Load data
     _, _, test_dataset = load_judge_datasets()
-    test_dataset = test_dataset.map(formatting_func)
+    # Data already has messages format, no need to apply formatting_func
     
     # Setup device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
