@@ -117,4 +117,4 @@ and [`docs/VAST_AI_SETUP.md`](docs/VAST_AI_SETUP.md).
 
 ---
 
-<sub>Repo cleaned up and documented with the help of [Claude Code](https://claude.com/claude-code).</sub>
+<sub>Original code written by me; documentation and repo cleanup done with the help of [Claude Code](https://claude.com/claude-code).</sub>
