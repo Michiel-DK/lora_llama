@@ -1,9 +1,10 @@
 # lora_llama
 
 LoRA fine-tuning of **Llama-3.2-1B-Instruct** for English→Portuguese translation,
-with a separate **LLM-as-a-judge** model (Qwen2.5-3B) trained to score translation
-quality. Runs on Apple Silicon (MPS) locally and NVIDIA GPUs (CUDA / Vast.ai) in
-the cloud. All configuration is in `params.py`.
+plus a separate **LLM-as-a-judge** model (Qwen2.5-3B) trained to score translation
+quality — distilled from a larger Groq-hosted teacher. Runs on Apple Silicon (MPS)
+locally and NVIDIA GPUs (CUDA / Vast.ai) in the cloud. All configuration is in
+`params.py`.
 
 ## Results
 
@@ -16,7 +17,8 @@ Fine-tuned on OpenSubtitles EN→PT, evaluated on a held-out OPUS test set
 | Fine-tuned  | 23.36 | 0.6869  | 1.57       | 100.0%           |
 | Improvement | +19.2 (+464%) | +0.134 | +0.29 | +13.3 pts |
 
-Decoding strategy on the fine-tuned model (separate sweep):
+Decoding strategy for the fine-tuned **translation** model (separate sweep; beam
+search wins on BLEU and ROUGE-L):
 
 | Strategy    | BLEU  | ROUGE-L | Perplexity | Filter pass rate |
 |-------------|-------|---------|------------|------------------|
@@ -29,19 +31,20 @@ Scores vary run-to-run with sample size and seed. Reproduce with
 
 ## Examples
 
-Fine-tuned model output vs. the reference translation:
+Base Llama-3.2-1B vs. the fine-tuned model on the same inputs (from the comparison
+run above). The base model often picks a wrong sense or appends an explanatory
+note; the fine-tuned model is concise and idiomatic:
 
-| English | Model output | Reference |
-|---------|--------------|-----------|
-| You seem to like fruit. | Você parece gostar de frutas. | Você parece gostar de frutas. |
-| We've got to find Tom first. | Temos que encontrar Tom primeiro. | Temos que encontrar o Tom primeiro. |
-| Tom is always in a good mood. | Tom sempre está em um bom humor. | Tom está sempre de bom humor. |
-| Tom sings in the school chorus. | Tom canta na coralagem escolar. | Tom canta no coral da escola. |
-| This vacuum cleaner is noisy. | Esta máquina de limpeza de pólvora é ruim. | Este aspirador de pó é barulhento. |
+| English | Base model | Fine-tuned | Reference |
+|---------|------------|-----------|-----------|
+| This vacuum cleaner is noisy. | Esta máquina de limpeza de **pólvora** é ruim. | A máquina de limpeza é **barulhosa**. | Este aspirador de pó é barulhento. |
+| Tom sings in the school chorus. | Tom canta na coralagem escolar. *Nota: "chorus"...* | O Tom cantava no coro da escola. | Tom canta no coral da escola. |
+| Let's play some video games to kill time. | Vamos jogar alguns jogos de vídeo... *Essa tradução mantém...* | Vamos jogar videogames para passar o tempo. | Vamos jogar video game para matar o tempo. |
+| We've got to find Tom first. | Temos que encontrar Tom primeiro. | Temos de encontrar **o** Tom primeiro. | Temos que encontrar o Tom primeiro. |
 
-The model sometimes appends an explanatory note or picks a wrong sense on rare
-vocabulary; the quality filter (`pt_app/trainer/quality_filter.py`) strips notes,
-language-mixing, and repetition before scoring.
+The base model's appended notes and verbosity are exactly what tanks its BLEU
+(4.14 above); the quality filter (`pt_app/trainer/quality_filter.py`) also strips
+such notes, language-mixing, and repetition before scoring.
 
 ## Layout
 
@@ -74,13 +77,19 @@ python run_inference.py --adapter ./adapters/<run_name> --prompt "Hello, how are
 python compare_baseline_vs_finetuned.py --adapter ./adapters/<run_name>
 ```
 
-## Judge model
+## Judge model (LLM-as-a-judge, distilled from a teacher)
 
-Rather than relying only on BLEU/ROUGE, a Qwen2.5-3B model is fine-tuned to predict
-a translation quality score, using Groq-generated reference scores as targets.
-Agreement with the reference is measured with Cohen's κ and MAE. See
-[`docs/JUDGE_TRAINING_USAGE.md`](docs/JUDGE_TRAINING_USAGE.md) and
-[`docs/VAST_AI_SETUP.md`](docs/VAST_AI_SETUP.md).
+Rather than relying only on BLEU/ROUGE, a Qwen2.5-3B model is fine-tuned to score
+translation quality. The training data is **distilled from a larger teacher**: a
+Groq-hosted model takes each source/reference pair and generates several Portuguese
+translations at controlled quality levels, each labelled with a score, the specific
+issues, and feedback (`pt_app/eval_model/judge_gen.py`). The small judge learns to
+reproduce those scores, and its agreement with the teacher is measured with
+Cohen's κ and MAE (`pt_app/eval_model/eval_judge_fast.py`).
+
+Trained on Apple Silicon (`judge_train_mps.py`) or a cloud NVIDIA GPU
+(`judge_train_cuda.py`). See [`docs/JUDGE_TRAINING_USAGE.md`](docs/JUDGE_TRAINING_USAGE.md)
+and [`docs/VAST_AI_SETUP.md`](docs/VAST_AI_SETUP.md).
 
 ## Notes
 
