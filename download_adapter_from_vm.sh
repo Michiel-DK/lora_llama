@@ -1,9 +1,14 @@
 #!/bin/bash
 # Download trained adapter from Vast.ai VM to local machine
 
-VM_HOST="root@1.208.108.242"
-VM_PORT="33590"
-ADAPTER_NAME="Qwen2.5-3B-Instruct-judge-3ep-20251209_150013_final"
+# Load VM connection settings from .env if present
+[ -f .env ] && source .env
+
+# Set these in your .env or export them before running.
+# Example: export VM_HOST=root@1.2.3.4 VM_PORT=22
+VM_HOST="${VM_HOST:?Set VM_HOST, e.g. root@1.2.3.4}"
+VM_PORT="${VM_PORT:?Set VM_PORT, e.g. 22}"
+ADAPTER_NAME="${ADAPTER_NAME:-Qwen2.5-3B-Instruct-judge-3ep-20251209_150013_final}"
 
 # Remote path on VM
 REMOTE_PATH="/root/lora_llama/adapters_eval/${ADAPTER_NAME}"
