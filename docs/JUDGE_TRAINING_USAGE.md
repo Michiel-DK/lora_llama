@@ -164,9 +164,9 @@ Should show:
 3. Verify internet connection
 4. Check `report_to=["wandb"]` in TrainingArguments
 
-## Comparison with Original judge_train.py
+## Comparison: CUDA vs MPS training
 
-| Feature | judge_train.py | judge_train_mps.py |
+| Feature | judge_train_cuda.py | judge_train_mps.py |
 |---------|---------------|-------------------|
 | Quantization | 4-bit | None (MPS incompatible) |
 | Precision | fp16 | float32 |

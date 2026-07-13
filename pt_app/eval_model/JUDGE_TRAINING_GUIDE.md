@@ -72,9 +72,9 @@ python pt_app/eval_model/judge_train_mps.py \
 
 ---
 
-## Key Differences from Original Script
+## Key Differences: CUDA vs MPS
 
-| Feature | Original (judge_train.py) | MPS Optimized (judge_train_mps.py) |
+| Feature | CUDA (judge_train_cuda.py) | MPS Optimized (judge_train_mps.py) |
 |---------|---------------------------|-------------------------------------|
 | Quantization | `load_in_4bit=True` ❌ | None (float32) ✅ |
 | Device | `device_map="auto"` ❌ | Manual MPS ✅ |

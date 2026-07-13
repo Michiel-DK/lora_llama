@@ -383,5 +383,3 @@ if __name__ == "__main__":
         print(f"Sample {i+1}:")
         print(f"{'='*60}")
         print(text)
-        
-    import ipdb; ipdb.set_trace()

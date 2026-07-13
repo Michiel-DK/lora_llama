@@ -1,6 +1,14 @@
 # train_judge_cuda.py - Optimized for CUDA GPUs (Vast.ai)
+"""
+IMPROVEMENTS IN THIS VERSION:
+- LoRA rank increased to 32 for 3B models (from 16) - better capacity
+- Early stopping with patience=3 to prevent overfitting
+- Default epochs increased to 5 (early stopping prevents issues)
+- All changes focused on improving translation quality metrics
+"""
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, BitsAndBytesConfig
+from transformers import EarlyStoppingCallback
 from peft import LoraConfig, get_peft_model, PeftModel, prepare_model_for_kbit_training
 from datasets import Dataset
 import json
@@ -179,15 +187,20 @@ def evaluate_judge_model(model, tokenizer, test_dataset, device, max_seq_length=
     ref_rounded = np.round(reference_scores).astype(int)
     kappa = cohen_kappa_score(ref_rounded, pred_rounded)
     
-    # Pearson correlation
-    pearson_r, _ = pearsonr(predicted_scores, reference_scores)
+    # Pearson correlation (handle edge cases)
+    if len(predicted_scores) < 2:
+        pearson_r = np.nan
+    elif np.std(predicted_scores) == 0 or np.std(reference_scores) == 0:
+        pearson_r = np.nan
+    else:
+        pearson_r, _ = pearsonr(predicted_scores, reference_scores)
     
     # ROUGE-L for feedback text
     rouge_scores = []
     for pred_fb, ref_fb in zip(predicted_feedbacks, reference_feedbacks):
         score = scorer.score(ref_fb, pred_fb)
         rouge_scores.append(score['rougeL'].fmeasure)
-    rouge_l_f1 = np.mean(rouge_scores)
+    rouge_l_f1 = np.mean(rouge_scores) if rouge_scores else 0.0
     
     results = {
         'mae': mae,
@@ -209,7 +222,7 @@ def evaluate_judge_model(model, tokenizer, test_dataset, device, max_seq_length=
     print(f"  MAE:             {mae:.3f} points")
     print(f"  RMSE:            {rmse:.3f} points")
     print(f"  Cohen's Kappa:   {kappa:.3f} (agreement)")
-    print(f"  Pearson r:       {pearson_r:.3f} (correlation)")
+    print(f"  Pearson r:       {pearson_r if np.isnan(pearson_r) else f'{pearson_r:.3f}'} (correlation)")
     print(f"\nFeedback Quality:")
     print(f"  ROUGE-L F1:      {rouge_l_f1:.3f}")
     print("="*80)
@@ -227,7 +240,7 @@ def evaluate_judge_model(model, tokenizer, test_dataset, device, max_seq_length=
 def train_judge_cuda(
     model_name="Qwen/Qwen2.5-3B-Instruct",  # Qwen2.5 3B Instruct for judge training
     output_dir="./adapters_eval",
-    num_epochs=3,
+    num_epochs=5,  # INCREASED from 3 - early stopping will prevent overfitting
     batch_size=2,
     gradient_accumulation_steps=2,  # Effective batch size = 4
     learning_rate=2e-4,
@@ -237,6 +250,7 @@ def train_judge_cuda(
     project_name="EN_PT_TRANSLATION_LORA",
     use_4bit=True,  # Use QLoRA 4-bit quantization
     skip_eval=False,  # Skip test evaluation
+    base_adapter=None,  # Path to existing adapter to continue training from
 ):
     """
     Fine-tune model as translation judge - OPTIMIZED FOR CUDA (Vast.ai)
@@ -334,6 +348,45 @@ def train_judge_cuda(
         )
         print("✅ Model loaded with fp16")
     
+    # Load base adapter if provided (for continuing training)
+    if base_adapter:
+        print(f"\n🔄 Loading base adapter from: {base_adapter}")
+        model = PeftModel.from_pretrained(
+            model,
+            base_adapter,
+            is_trainable=True,  # Make adapter trainable for continued training
+        )
+        print("✅ Base adapter loaded, will continue training from checkpoint")
+    else:
+        # LoRA configuration (only if NOT loading existing adapter)
+        print("\n2. Applying LoRA adapters...")
+        
+        # Adjust LoRA rank based on model size
+        if "1B" in model_name or "1.5B" in model_name or "1.8B" in model_name:
+            lora_r = 16  # Higher rank for smaller models (1B-2B)
+            lora_alpha = 32
+        elif "3B" in model_name or "4B" in model_name:
+            lora_r = 32  # INCREASED from 16 - better capacity for Portuguese
+            lora_alpha = 64
+        elif "7B" in model_name:
+            lora_r = 16  # Medium for 7B
+            lora_alpha = 32
+        else:
+            lora_r = 16  # Default
+            lora_alpha = 32
+        
+        lora_config = LoraConfig(
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM"
+        )
+        
+        model = get_peft_model(model, lora_config)
+        # No need to move to device - device_map="auto" handles it
+    
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
         trust_remote_code=True,
@@ -343,35 +396,6 @@ def train_judge_cuda(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
-    
-    # LoRA configuration
-    print("\n2. Applying LoRA adapters...")
-    
-    # Adjust LoRA rank based on model size
-    if "1B" in model_name or "1.5B" in model_name or "1.8B" in model_name:
-        lora_r = 16  # Higher rank for smaller models (1B-2B)
-        lora_alpha = 32
-    elif "3B" in model_name or "4B" in model_name:
-        lora_r = 16  # Medium rank for 3B models
-        lora_alpha = 32
-    elif "7B" in model_name:
-        lora_r = 8  # Smaller for 7B
-        lora_alpha = 16
-    else:
-        lora_r = 8  # Default conservative
-        lora_alpha = 16
-    
-    lora_config = LoraConfig(
-        r=lora_r,
-        lora_alpha=lora_alpha,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM"
-    )
-    
-    model = get_peft_model(model, lora_config)
-    # No need to move to device - device_map="auto" handles it
     
     print("\nTrainable parameters:")
     model.print_trainable_parameters()
@@ -469,8 +493,13 @@ def train_judge_cuda(
         mlm=False,  # We're doing causal LM, not masked LM
     )
     
-    # Create trainer
-    print("\n6. Setting up trainer...")
+    # Create trainer with early stopping
+    print("\n6. Setting up trainer with early stopping...")
+    early_stopping = EarlyStoppingCallback(
+        early_stopping_patience=3,  # Stop if no improvement for 3 evaluations
+        early_stopping_threshold=0.0  # Any improvement counts
+    )
+    
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -478,6 +507,7 @@ def train_judge_cuda(
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=data_collator,
+        callbacks=[early_stopping],
     )
     
     # Train
@@ -597,6 +627,7 @@ if __name__ == "__main__":
     parser.add_argument("--project_name", default="EN_PT_TRANSLATION_LORA", help="WandB project name")
     parser.add_argument("--no_4bit", action="store_true", help="Disable 4-bit quantization (use fp16)")
     parser.add_argument("--skip_eval", action="store_true", help="Skip test evaluation after training")
+    parser.add_argument("--base_adapter", default=None, help="Path to existing adapter to continue training from (e.g., ./adapters/model_name)")
     
     args = parser.parse_args()
     
@@ -622,4 +653,5 @@ if __name__ == "__main__":
         project_name=args.project_name,
         use_4bit=not args.no_4bit,
         skip_eval=args.skip_eval,
+        base_adapter=args.base_adapter,
     )
