@@ -114,3 +114,7 @@ and [`docs/VAST_AI_SETUP.md`](docs/VAST_AI_SETUP.md).
   data stay local.
 - Experiment tracking via Weights & Biases / Weave (toggle `USE_WANDB` in `params.py`).
 - Fully pinned environment in `requirements-lock.txt`.
+
+---
+
+<sub>Repo cleaned up and documented with the help of [Claude Code](https://claude.com/claude-code).</sub>
