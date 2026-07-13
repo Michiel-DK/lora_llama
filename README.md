@@ -77,6 +77,22 @@ python run_inference.py --adapter ./adapters/<run_name> --prompt "Hello, how are
 python compare_baseline_vs_finetuned.py --adapter ./adapters/<run_name>
 ```
 
+## Training setup
+
+| | Translation model | Judge model |
+|--|--|--|
+| Base | Llama-3.2-1B-Instruct | Qwen2.5-3B-Instruct |
+| Method | LoRA (r=16, ~3.4M trainable params, 0.28%) | LoRA + 4-bit quantization |
+| Data | OpenSubtitles EN→PT | Groq-generated quality-scored translations |
+| Hardware | MacBook Pro, Apple Silicon (MPS) | Cloud NVIDIA GPU (Vast.ai / CUDA) |
+| Run | ~2h16m, 10-epoch config, early-stopped (best at epoch 2) | 3 epochs |
+
+The translation model is small enough to fine-tune locally in a couple of hours;
+the 3B judge needs a GPU, hence the CUDA path and the Vast.ai upload/download
+tooling (`upload_to_vm.sh`, `setup_vast.sh`). A Llama-3.2-**3B** translation model
+was also tried, but 1B was kept as the final generator. Numbers above are from the
+best tracked run; earlier experiments ranged from a few minutes to ~7 hours.
+
 ## Judge model (LLM-as-a-judge, distilled from a teacher)
 
 Rather than relying only on BLEU/ROUGE, a Qwen2.5-3B model is fine-tuned to score
