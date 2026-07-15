@@ -6,19 +6,38 @@ quality — distilled from a larger Groq-hosted teacher. Runs on Apple Silicon (
 locally and NVIDIA GPUs (CUDA / Vast.ai) in the cloud. All configuration is in
 `params.py`.
 
-## Results
+> **Status — proof of concept.** This is a complete, working end-to-end pipeline
+> (data → LoRA fine-tune → evaluation → LLM-judge), demonstrated at small scale on a
+> laptop. The numbers below are **preliminary**, not a benchmark; a scaled
+> single-dataset run is planned to produce defensible results (see *Results*). The
+> distilled **judge model** is the more novel piece — start there if you're skimming.
 
-Fine-tuned on OpenSubtitles EN→PT, evaluated on a held-out OPUS test set
-(beam-search decoding, numbers from a logged W&B run):
+## Results (preliminary, small-scale)
+
+These numbers demonstrate the pipeline works end-to-end; they are **not a benchmarked
+result**. The tracked runs used a small data budget (`DATASET_SAMPLES ≈ 200`, i.e.
+~80–130 training rows) and small held-out test sets (11–127 samples), evaluated
+out-of-domain. Read them as *direction*, not precise scores. A scaled run — thousands
+of training rows, hundreds of in-domain test samples, one canonical adapter — is
+planned to replace both tables with defensible numbers.
+
+Both models are LoRA adapters over Llama-3.2-1B-Instruct, trained on OpenSubtitles
+EN→PT. The two tables below come from **two separate W&B runs using different
+adapters and different test sets**, so the fine-tuned beam-search BLEU differs
+between them — the tables are **not directly comparable**.
+
+**Baseline vs fine-tuned** — Tatoeba EN→PT held-out set, **15 samples**, beam search,
+adapter `…opensubtitles-10ep…best_ep2` (W&B run `20251121_121031`):
 
 | Model       | BLEU  | ROUGE-L | Perplexity | Filter pass rate |
 |-------------|-------|---------|------------|------------------|
 | Baseline    | 4.14  | 0.5528  | 1.86       | 86.7%            |
 | Fine-tuned  | 23.36 | 0.6869  | 1.57       | 100.0%           |
-| Improvement | +19.2 (+464%) | +0.134 | +0.29 | +13.3 pts |
+| Improvement | +19.2 | +0.134  | +0.29      | +13.3 pts        |
 
-Decoding strategy for the fine-tuned **translation** model (separate sweep; beam
-search wins on BLEU and ROUGE-L):
+**Decoding strategy** for the fine-tuned model (separate sweep) — opus_books EN→PT,
+**127 samples**, adapter `20251118_131246_best_ep2` (W&B run `20251119_131447`); beam
+search wins on BLEU and ROUGE-L:
 
 | Strategy    | BLEU  | ROUGE-L | Perplexity | Filter pass rate |
 |-------------|-------|---------|------------|------------------|
@@ -26,14 +45,33 @@ search wins on BLEU and ROUGE-L):
 | beam search | 29.98 | 0.5954  | 1.70       | 94.5%            |
 | sampling    | 20.11 | 0.5103  | 1.85       | 85.8%            |
 
-Scores vary run-to-run with sample size and seed. Reproduce with
-`compare_baseline_vs_finetuned.py` and `compare_generation_strategies.py`.
+Reproduce with `compare_baseline_vs_finetuned.py` and
+`compare_generation_strategies.py`.
+
+## Planned work
+
+To turn the preliminary numbers above into a result that holds up:
+
+- **Scale the data** — raise `DATASET_SAMPLES` from 200 to a few thousand, so training
+  sees thousands of rows and the held-out test set is in the hundreds (the current
+  11–15-sample tests are too small to trust a BLEU delta).
+- **One canonical experiment** — a single adapter evaluated on a single **in-domain**
+  held-out split, covering baseline vs fine-tuned *and* the decoding sweep in one run,
+  so both tables are directly comparable.
+- **Report uncertainty** — bootstrap confidence intervals on BLEU/ROUGE (`23 ± 3`
+  beats `23.36`) instead of point estimates on tiny samples.
+- **Foreground the judge** — surface the judge model's agreement with its teacher
+  (Cohen's κ / MAE) as a headline metric, not a footnote.
+- **Lock reproducibility** — pin the raw dataset + split so the exact test set can be
+  regenerated, and add a short `RESULTS.md` / model card naming the canonical adapter.
+
+Scaled runs will use the CUDA / Vast.ai path (see *Training setup*).
 
 ## Examples
 
-Base Llama-3.2-1B vs. the fine-tuned model on the same inputs (from the comparison
-run above). The base model often picks a wrong sense or appends an explanatory
-note; the fine-tuned model is concise and idiomatic:
+Base Llama-3.2-1B vs. the fine-tuned model on the same inputs (from the Tatoeba
+baseline-vs-fine-tuned run above). The base model often picks a wrong sense or
+appends an explanatory note; the fine-tuned model is concise and idiomatic:
 
 | English | Base model | Fine-tuned | Reference |
 |---------|------------|-----------|-----------|
@@ -90,8 +128,8 @@ python compare_baseline_vs_finetuned.py --adapter ./adapters/<run_name>
 The translation model is small enough to fine-tune locally in a couple of hours;
 the 3B judge needs a GPU, hence the CUDA path and the Vast.ai upload/download
 tooling (`upload_to_vm.sh`, `setup_vast.sh`). A Llama-3.2-**3B** translation model
-was also tried, but 1B was kept as the final generator. Numbers above are from the
-best tracked run; earlier experiments ranged from a few minutes to ~7 hours.
+was also tried, but 1B was kept as the final generator. The results tables draw on the
+better tracked runs; earlier experiments ranged from a few minutes to ~7 hours.
 
 ## Judge model (LLM-as-a-judge, distilled from a teacher)
 
