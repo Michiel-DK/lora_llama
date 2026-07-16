@@ -81,8 +81,9 @@ appends an explanatory note; the fine-tuned model is concise and idiomatic:
 | We've got to find Tom first. | Temos que encontrar Tom primeiro. | Temos de encontrar **o** Tom primeiro. | Temos que encontrar o Tom primeiro. |
 
 The base model's appended notes and verbosity are exactly what tanks its BLEU
-(4.14 above); the quality filter (`pt_app/trainer/quality_filter.py`) also strips
-such notes, language-mixing, and repetition before scoring.
+(4.14 above); the quality filter (`pt_app/trainer/quality_filter.py`) also
+filters/rejects such verbose or mixed-language outputs before scoring (via
+language, length, and repetition checks).
 
 ## Layout
 
@@ -125,6 +126,10 @@ python compare_baseline_vs_finetuned.py --adapter ./adapters/<run_name>
 | Hardware | MacBook Pro, Apple Silicon (MPS) | Cloud NVIDIA GPU (Vast.ai / CUDA) |
 | Run | ~2h16m, 10-epoch config, early-stopped (best at epoch 2) | 3 epochs |
 
+The committed `params.py` ships a fast-start default (`EPOCHS=1`,
+`DATASET_SAMPLES=200`); the tracked results above came from a longer 10-epoch run
+(early-stopped at epoch 2) over the same ~200-sample data budget.
+
 The translation model is small enough to fine-tune locally in a couple of hours;
 the 3B judge needs a GPU, hence the CUDA path and the Vast.ai upload/download
 tooling (`upload_to_vm.sh`, `setup_vast.sh`). A Llama-3.2-**3B** translation model
@@ -141,8 +146,10 @@ issues, and feedback (`pt_app/eval_model/judge_gen.py`). The small judge learns 
 reproduce those scores, and its agreement with the teacher is measured with
 Cohen's κ and MAE (`pt_app/eval_model/eval_judge_fast.py`).
 
-Trained on Apple Silicon (`judge_train_mps.py`) or a cloud NVIDIA GPU
-(`judge_train_cuda.py`). See [`docs/JUDGE_TRAINING_USAGE.md`](docs/JUDGE_TRAINING_USAGE.md)
+The 3B judge is trained via the cloud NVIDIA GPU path (`judge_train_cuda.py`,
+default `Qwen/Qwen2.5-3B-Instruct`). A smaller local variant runs on Apple Silicon
+(`judge_train_mps.py`, default `Qwen/Qwen2-1.5B-Instruct`). See
+[`docs/JUDGE_TRAINING_USAGE.md`](docs/JUDGE_TRAINING_USAGE.md)
 and [`docs/VAST_AI_SETUP.md`](docs/VAST_AI_SETUP.md).
 
 ## Notes
