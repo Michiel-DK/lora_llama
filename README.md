@@ -28,11 +28,15 @@ On a 15-sample Tatoeba EN→PT held-out set (beam search, adapter
 `…opensubtitles-10ep…best_ep2`, W&B run `20251121_121031`), the fine-tuned adapter beat
 the base model on the two metrics from this run that I trust:
 
-| Model      | ROUGE-L (F1) | Perplexity (mean) | Quality-filter pass rate | BLEU [^bleu] |
-|------------|--------------|-------------------|--------------------------|--------------|
-| Baseline   | 0.5528       | 1.86              | 86.7%                    | 4.14         |
-| Fine-tuned | 0.6869       | 1.57              | 100.0%                   | 23.36        |
-| Change     | +0.134       | −0.29             | +13.3 pts                | invalid      |
+| Model      | ROUGE-L (F1) | Perplexity (mean) | Quality-filter pass rate |
+|------------|--------------|-------------------|--------------------------|
+| Baseline   | 0.5528       | 1.86              | 86.7%                    |
+| Fine-tuned | 0.6869       | 1.57              | 100.0%                   |
+| Change     | +0.134       | −0.29             | +13.3 pts                |
+
+The same run also logged BLEU (4.14 baseline, 23.36 fine-tuned). Those figures are
+invalid because of a scoring bug and are deliberately left out of the table; see
+"BLEU figures are invalid" below.
 
 Fifteen samples is a probe, not a benchmark. The direction is consistent with the
 examples further down, but I would not quote the size of the gap. The training budget
@@ -44,19 +48,16 @@ test set (opus_books EN→PT, 127 samples, W&B run `20251119_131447`). Beam sear
 every metric. Because adapter and test set both differ, this table is not comparable to
 the one above.
 
-| Strategy    | ROUGE-L (F1) | Perplexity | Quality-filter pass rate | BLEU [^bleu] |
-|-------------|--------------|------------|--------------------------|--------------|
-| greedy      | 0.5166       | 1.99       | 85.8%                    | 27.90        |
-| beam search | 0.5954       | 1.70       | 94.5%                    | 29.98        |
-| sampling    | 0.5103       | 1.85       | 85.8%                    | 20.11        |
+| Strategy    | ROUGE-L (F1) | Perplexity | Quality-filter pass rate |
+|-------------|--------------|------------|--------------------------|
+| greedy      | 0.5166       | 1.99       | 85.8%                    |
+| beam search | 0.5954       | 1.70       | 94.5%                    |
+| sampling    | 0.5103       | 1.85       | 85.8%                    |
 
 The scripts that produced these are `compare_baseline_vs_finetuned.py` and
-`compare_generation_strategies.py`.
-
-[^bleu]: **Invalid.** Every BLEU figure in this repo went through a scoring bug in
-    `pt_app/trainer/evaluation.py` (lines 182 to 183, and again at line 415). See
-    "BLEU figures are invalid" below. The numbers are kept in the tables only so the
-    record matches the W&B runs; do not quote them.
+`compare_generation_strategies.py`. Every BLEU figure either script ever printed went
+through the same scoring bug (`pt_app/trainer/evaluation.py`, lines 182 to 183 and 415),
+so none is reported here.
 
 ## What was wrong
 
