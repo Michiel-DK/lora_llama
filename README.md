@@ -15,8 +15,8 @@ Two things live in this repo:
    trained on OpenSubtitles EN→PT on a MacBook (MPS), with a CUDA / Vast.ai path for
    larger runs.
 2. An **LLM-as-a-judge** experiment: Qwen2.5-3B fine-tuned to score translation quality,
-   with training data distilled from a larger Groq-hosted teacher. This part has a
-   data-leakage flaw (described below) that makes its agreement numbers meaningless.
+   with training data distilled from a larger Groq-hosted teacher. Its data split has a
+   leak (described below), so the distillation result is open rather than claimed.
 
 All configuration is in `params.py`.
 
@@ -59,51 +59,21 @@ The scripts that produced these are `compare_baseline_vs_finetuned.py` and
 through the same scoring bug (`pt_app/trainer/evaluation.py`, lines 182 to 183 and 415),
 so none is reported here.
 
-## What was wrong
+## Two things I got wrong
 
-### BLEU figures are invalid (scoring bug)
+Found on a re-read of the code in 2026, after the runs were done. Details and the
+reproduction in [`docs/EVAL_CAVEATS.md`](docs/EVAL_CAVEATS.md).
 
-`pt_app/trainer/evaluation.py:182-183` computes corpus BLEU like this:
-
-```python
-refs_formatted = [[ref] for ref in references]
-bleu_score = sacrebleu.corpus_bleu(predictions, refs_formatted)
-```
-
-`sacrebleu.corpus_bleu` expects a list of reference *streams*: one list per reference
-set, each aligned with `predictions`. For a single reference per sentence the correct
-call is `corpus_bleu(predictions, [references])`. What the code passes instead is N
-streams of length 1. sacrebleu zips hypotheses against the streams, which truncates to
-the first hypothesis, and the N reference sentences are then treated as N alternative
-references for that one hypothesis. So the reported "corpus BLEU" is the score of the
-first test sentence, scored against every reference in the set. Checked with sacrebleu
-2.5.1 (the pinned version): on a 3-sentence toy set the buggy call reports a system
-length of one sentence and a score of 100, the correct call reports 47.9. The same
-pattern is at line 415. The base-vs-fine-tuned BLEU delta of "4.14 → 23.36" that this
-repo used to headline is therefore not a translation-quality result.
-
-The fix is a one-line change. I have deliberately not applied it in this frozen repo,
-so that the code matches the logged runs; the README carries the caveat instead.
-
-### The judge's test set leaks its training sources
-
-The judge training data is built by `pt_app/eval_model/judge_gen.py`: for each source
-sentence, the teacher generates several Portuguese translations at controlled quality
-levels, each with a 0 to 10 score, issues and feedback. `split_judge_data.py` then
-shuffles those rows and cuts 80/10/10. Because the shuffle is at row level, the variants
-of one source sentence land in train, val and test alike.
-
-On the local split I trained and evaluated on (`datasets/judge_eval/`, not committed,
-138 test rows): all 138 test rows have a source sentence that also appears in the
-training set. The whole set of 1,372 rows covers only 124 distinct source sentences.
-The judge therefore saw the source, the reference, and several scored translations of
-every test item during training. The Cohen's κ / MAE / Pearson r that
-`pt_app/eval_model/eval_judge_fast.py` computes against the teacher on that test set
-measure memorisation of source-specific patterns, not judging ability, and I do not
-report them here. (From my notes, not from a file in this repo: the agreement I measured
-was at or below chance, which is consistent with a model that learned the sources rather
-than the scoring.) A correct split would group by source sentence before splitting, and
-hold out sources the judge has never seen.
+- **BLEU was mis-scored.** `pt_app/trainer/evaluation.py` (lines 182 to 183, and 415) wraps
+  each reference as its own stream, so `sacrebleu.corpus_bleu` scores only the first test
+  sentence. The old "BLEU 4 → 23" headline was that one sentence, not the test set. ROUGE-L
+  and perplexity were computed correctly and are what the tables above report. Left unfixed
+  on purpose so the code matches the logged runs.
+- **The judge's test set leaks.** `split_judge_data.py` shuffles at row level, so the scored
+  variants of one source sentence land in train and test alike. On my local split every one
+  of the 138 test rows shares its source with training. Agreement with the teacher on that
+  set measures memorisation, not judging, so no κ or r is reported. The fix is to split by
+  source sentence.
 
 ## Examples
 
@@ -184,12 +154,10 @@ quality levels, each labelled with a score, the specific issues, and feedback
 `pt_app/eval_model/eval_judge_fast.py` measures agreement with the teacher via Cohen's κ,
 MAE and Pearson r.
 
-As built, the experiment does not support any conclusion about whether the distillation
-worked, because the test set shares every source sentence with the training set (see
-"The judge's test set leaks its training sources" above). The pipeline itself, data
-generation, splitting, LoRA training with 4-bit quantization on a rented GPU, and
-evaluation, runs end to end; the number it produces at the end is not a measurement of
-judging ability.
+The pipeline (data generation, splitting, LoRA training with 4-bit quantization on a rented
+GPU, evaluation) runs end to end. Because of the split leak described above, its final
+agreement number is not a measurement of judging ability, so the distillation result is
+open, not claimed.
 
 The 3B judge is trained via the cloud NVIDIA GPU path (`judge_train_cuda.py`, default
 `Qwen/Qwen2.5-3B-Instruct`). A smaller local variant runs on Apple Silicon
