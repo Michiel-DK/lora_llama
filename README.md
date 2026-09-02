@@ -119,9 +119,9 @@ an explanatory note; the fine-tuned model is concise and idiomatic:
 | We've got to find Tom first. | Temos que encontrar Tom primeiro. | Temos de encontrar **o** Tom primeiro. | Temos que encontrar o Tom primeiro. |
 
 The base model's appended notes and verbosity are what the quality filter
-(`pt_app/trainer/quality_filter.py`) is there to catch: it strips such notes,
-language-mixing and repetition before scoring, and it is why the base model's filter pass
-rate is 86.7% against the fine-tuned model's 100%.
+(`pt_app/trainer/quality_filter.py`) is there to catch: it filters or rejects such verbose
+or mixed-language outputs before scoring (language, length and repetition checks), and it
+is why the base model's filter pass rate is 86.7% against the fine-tuned model's 100%.
 
 ## Layout
 
@@ -169,7 +169,10 @@ The translation model is small enough to fine-tune locally in a couple of hours;
 judge needs a GPU, hence the CUDA path and the Vast.ai upload/download tooling
 (`upload_to_vm.sh`, `setup_vast.sh`). A Llama-3.2-**3B** translation model was also
 tried, but 1B was kept as the final generator. The results tables draw on the better
-tracked runs; earlier experiments ranged from a few minutes to ~7 hours.
+tracked runs; earlier experiments ranged from a few minutes to ~7 hours. The committed
+`params.py` ships a fast-start default (`EPOCHS=1`, `DATASET_SAMPLES=200`); the tracked
+results above came from a longer 10-epoch run (early-stopped at epoch 2) over the same
+~200-sample data budget.
 
 ## Judge model (LLM-as-a-judge, distilled from a teacher)
 
@@ -188,8 +191,10 @@ generation, splitting, LoRA training with 4-bit quantization on a rented GPU, an
 evaluation, runs end to end; the number it produces at the end is not a measurement of
 judging ability.
 
-Trained on Apple Silicon (`judge_train_mps.py`) or a cloud NVIDIA GPU
-(`judge_train_cuda.py`). See [`docs/JUDGE_TRAINING_USAGE.md`](docs/JUDGE_TRAINING_USAGE.md)
+The 3B judge is trained via the cloud NVIDIA GPU path (`judge_train_cuda.py`, default
+`Qwen/Qwen2.5-3B-Instruct`). A smaller local variant runs on Apple Silicon
+(`judge_train_mps.py`, default `Qwen/Qwen2-1.5B-Instruct`). See
+[`docs/JUDGE_TRAINING_USAGE.md`](docs/JUDGE_TRAINING_USAGE.md)
 and [`docs/VAST_AI_SETUP.md`](docs/VAST_AI_SETUP.md).
 
 ## If I picked it up again
