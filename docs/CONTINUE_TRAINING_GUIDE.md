@@ -14,8 +14,8 @@ This guide shows how to upload your base adapter and training data to Vast.ai, t
 After creating the instance, update your `.env` file with connection details:
 
 ```bash
-VM_HOST=<instance_ip>      # e.g., 1.208.108.242
-VM_PORT=<ssh_port>         # e.g., 33590
+VM_HOST=<instance_ip>
+VM_PORT=<ssh_port>         # e.g., 22
 VM_USER=root
 ```
 

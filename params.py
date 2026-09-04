@@ -33,8 +33,9 @@ MAX_TOTAL_TOKENS = 512
 # Options: 'opus_books', 'opensubtitles', 'opus100', 'tatoeba'
 DATASET = 'opensubtitles'  # ← CHANGED from 'tatoeba'!
 
-# Sweet spot: 500 samples (gave BLEU 34 vs 1404 → BLEU 30)
-# Use 500-1000 for best results
+# The old 500-1000 recommendation rested on a BLEU comparison made before the BLEU
+# scoring bug was found (docs/EVAL_CAVEATS.md, left unfixed on purpose) and is
+# withdrawn. The reported adapter was trained at 200.
 DATASET_SAMPLES = 200  # ← CHANGED from 2000!
 EPOCHS = 1
 

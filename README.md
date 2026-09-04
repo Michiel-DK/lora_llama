@@ -5,7 +5,8 @@
 ![Weights & Biases](https://img.shields.io/badge/tracking-Weights_%26_Biases-eb6834)
 ![Hardware](https://img.shields.io/badge/runs_on-Apple_Silicon_(MPS)_%7C_CUDA-1baf7a)
 
-Built between September 2025 and July 2026 (first and last commit); frozen since.
+Code written between September 2025 and July 2026 and frozen since; the write-up was
+revised in September 2026 after the scoring bug below was found.
 This README is a record of what it was, what worked, and what was wrong. Nothing here
 is being actively developed.
 

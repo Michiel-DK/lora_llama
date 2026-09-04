@@ -1,3 +1,5 @@
+> **BLEU warning.** Every BLEU figure this guide mentions comes from a scoring call that measures one sentence, not the corpus (`docs/EVAL_CAVEATS.md`). Read ROUGE-L, perplexity and pass rate; ignore BLEU.
+
 # Generation Strategy Testing Guide
 
 ## Overview
@@ -188,6 +190,8 @@ Run the comparison script to see which works best for your specific model and da
 
 ## Example Output
 
+Transcript below has the BLEU column removed. The script still prints one, but the repo's BLEU scoring scores a single sentence and the value is invalid (see `docs/EVAL_CAVEATS.md`).
+
 ```
 ================================================================================
 STRATEGY COMPARISON SUMMARY
@@ -195,15 +199,14 @@ STRATEGY COMPARISON SUMMARY
 
 Metric Comparison:
 --------------------------------------------------------------------------------
-Strategy            BLEU    ROUGE-L  Perplexity  Pass Rate
+Strategy           ROUGE-L  Perplexity  Pass Rate
 --------------------------------------------------------------------------------
-greedy             27.90     0.5166        1.99      85.8%
-beam_search        29.98     0.5954        1.70      94.5%
-sampling           20.11     0.5103        1.85      85.8%
+greedy              0.5166        1.99      85.8%
+beam_search         0.5954        1.70      94.5%
+sampling            0.5103        1.85      85.8%
 --------------------------------------------------------------------------------
 
 Best Strategies:
-  BLEU: beam_search (29.98)
   ROUGE-L: beam_search (0.5954)
   Perplexity: beam_search (1.70)
 ================================================================================

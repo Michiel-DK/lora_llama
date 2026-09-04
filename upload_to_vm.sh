@@ -24,7 +24,7 @@ VM_USER="${VM_USER:-root}"
 # Check if VM details are set
 if [ "$VM_HOST" = "REPLACE_WITH_VM_IP" ]; then
     echo -e "${RED}ERROR: Please update VM_HOST in .env or set environment variable${NC}"
-    echo "Example: export VM_HOST=1.208.108.242"
+    echo "Example: export VM_HOST=<instance_ip>"
     exit 1
 fi
 
