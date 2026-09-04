@@ -112,6 +112,7 @@ is why the base model's filter pass rate is 86.7% against the fine-tuned model's
 ## Usage
 
 ```bash
+# Python 3.12 (the pinned numpy needs 3.11+)
 pip install -r requirements.txt          # add requirements_cuda.txt on NVIDIA GPUs
 cp .env.example .env                      # then fill in your tokens
 
